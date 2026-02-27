@@ -251,6 +251,14 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
                 rich_help_panel="Basic Configuration",
             ),
         ] = "",
+        max_notes_count: Annotated[
+            int,
+            typer.Option(
+                "--max_notes_count",
+                help="Maximum number of posts/videos to crawl per keyword",
+                rich_help_panel="Basic Configuration",
+            ),
+        ] = config.CRAWLER_MAX_NOTES_COUNT,
         max_comments_count_singlenotes: Annotated[
             int,
             typer.Option(
@@ -325,6 +333,7 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
         config.CDP_HEADLESS = enable_headless
         config.SAVE_DATA_OPTION = save_data_option.value
         config.COOKIES = cookies
+        config.CRAWLER_MAX_NOTES_COUNT = max_notes_count
         config.CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES = max_comments_count_singlenotes
         config.MAX_CONCURRENCY_NUM = max_concurrency_num
         config.SAVE_DATA_PATH = save_data_path

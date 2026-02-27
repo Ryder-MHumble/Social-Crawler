@@ -13,6 +13,7 @@ Usage:
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import argparse
 
@@ -27,16 +28,26 @@ except ImportError:
 # ==================== 配置区域 ====================
 # 关键词配置
 # 用精确的机构全称搜索，结合 RELEVANCE_MUST_CONTAIN 过滤确保只保存相关内容
-KEYWORDS = "中关村人工智能研究院,北京中关村学院,中关村学院"
+KEYWORDS = "中关村人工智能研究院,北京中关村学院,中关村学院,中关村 河套 创智"
+# 喜欢对比上海创智、深圳河套还有上海AI Lab
 
 # 平台配置
-PLATFORMS = ["xhs", "dy", "bili", "wb"]  # xhs=小红书, dy=抖音, bili=B站, wb=微博
+PLATFORMS = ["xhs", "dy", "bili", "zhihu"]  # xhs=小红书, dy=抖音, bili=B站, zhihu=知乎
 
 # 爬取配置
-LOGIN_TYPE = "cookie"  # cookie 或 qrcode (优先使用 Cookie 登录)
+LOGIN_TYPE = "qrcode"  # cookie 或 qrcode (优先使用 Cookie 登录)
 CRAWLER_TYPE = "search"
 SAVE_DATA_OPTION = "supabase"
 ENABLE_COMMENTS = "yes"
+
+# 平台专属覆盖配置（不填则使用 base_config.py 中的默认值）
+# max_notes_count: 每个关键词最多爬取多少条内容
+PLATFORM_OVERRIDES: dict[str, dict] = {
+    # xhs 不填，沿用 base_config.py 默认值（30条/关键词）
+    "dy":    {"max_notes_count": 10},  # 抖音：内容质量参差，适当减量
+    "bili":  {"max_notes_count": 15},  # B站：相关内容少，减量
+    "zhihu": {"max_notes_count": 10},  # 知乎：内容冗杂，最少
+}
 
 # 平台名称映射
 PLATFORM_NAMES = {
@@ -137,7 +148,7 @@ def login_platform(platform: str) -> bool:
 
     # 构建登录命令 - 只爬取少量数据用于测试
     cmd = [
-        "uv", "run", "main.py",
+        sys.executable, "main.py",
         "--platform", platform,
         "--lt", LOGIN_TYPE,
         "--type", CRAWLER_TYPE,
@@ -233,14 +244,20 @@ def check_and_login():
         return True
 
     print(f"\n⚠️  需要登录 {len(need_login)} 个平台: {', '.join([PLATFORM_NAMES.get(p, p) for p in need_login])}")
-    print("💡 请先运行 'python run.py --login-only' 完成登录，或切换到 Cookie 登录")
 
-    # 至少有一些平台已登录，继续爬取
-    logged_in_count = len(PLATFORMS) - len(need_login)
+    # 逐个平台执行扫码登录
+    for platform in need_login:
+        success = login_platform(platform)
+        if success:
+            login_status[platform] = True
+
+    # 统计最终已登录平台数
+    logged_in_count = sum(1 for v in login_status.values() if v)
     if logged_in_count > 0:
-        print(f"\n✅ 将继续爬取已登录的 {logged_in_count} 个平台")
+        print(f"\n✅ 当前已登录 {logged_in_count}/{len(PLATFORMS)} 个平台")
         return True
 
+    print("\n❌ 所有平台登录均失败")
     return False
 
 
@@ -262,7 +279,7 @@ def run_single_platform(platform: str):
 
     # 构建命令
     cmd = [
-        "uv", "run", "main.py",
+        sys.executable, "main.py",
         "--platform", platform,
         "--lt", LOGIN_TYPE,
         "--type", CRAWLER_TYPE,
@@ -271,18 +288,22 @@ def run_single_platform(platform: str):
         "--get_comment", ENABLE_COMMENTS,
     ]
 
+    # 应用平台专属覆盖配置
+    overrides = PLATFORM_OVERRIDES.get(platform, {})
+    if "max_notes_count" in overrides:
+        cmd.extend(["--max_notes_count", str(overrides["max_notes_count"])])
+
     # 如果启用 Cookie 登录，添加 Cookie 参数
     if is_cookie_login_enabled():
         cookie = get_platform_cookie(platform)
         if cookie:
             cmd.extend(["--cookies", cookie])
-            print(f"  🔑 使用 Cookie 登录")
+            print(f"  🔑 [{platform.upper()}] 使用 Cookie 登录")
         else:
-            print(f"  ⚠️  未配置 {platform_name} 的 Cookie，将尝试使用缓存登录状态")
+            print(f"  ⚠️  [{platform.upper()}] 未配置 {platform_name} 的 Cookie，将尝试使用缓存登录状态")
 
     try:
-        # 直接输出到终端，让用户实时看到进度
-        result = subprocess.run(
+        subprocess.run(
             cmd,
             check=True,
             cwd=Path(__file__).parent
@@ -292,13 +313,13 @@ def run_single_platform(platform: str):
         print(f"\n✅ [{platform.upper()}] {platform_name} 爬取完成！耗时: {duration:.1f}秒")
         return (platform, True, duration)
 
-    except subprocess.CalledProcessError as e:
+    except subprocess.CalledProcessError:
         duration = time.time() - start_time
         print(f"\n❌ [{platform.upper()}] {platform_name} 爬取失败！")
         if is_cookie_login_enabled():
-            print(f"💡 提示: {platform_name} 的 Cookie 可能已失效，请更新 cookies_config.py")
+            print(f"💡 [{platform.upper()}] {platform_name} 的 Cookie 可能已失效，请更新 cookies_config.py")
         else:
-            print(f"💡 提示: 请检查登录状态或切换到 Cookie 登录")
+            print(f"💡 [{platform.upper()}] 请检查登录状态或切换到 Cookie 登录")
         return (platform, False, duration)
 
     except Exception as e:
@@ -307,53 +328,62 @@ def run_single_platform(platform: str):
         return (platform, False, duration)
 
 
-def serial_crawl():
+def parallel_crawl():
     """
-    串行爬取所有平台（逐个执行）
+    并行爬取所有平台（同时启动，各自独立进程）
+
+    去重说明：各平台是独立子进程，内存不共享。
+    跨平台的内容去重由 Supabase upsert + UNIQUE 约束保底；
+    单平台内的跨关键词去重由 supabase_store_base.py 的 _seen_content_ids 处理。
 
     Returns:
         bool: 是否至少有一个平台成功
     """
     print("\n" + "="*70)
-    print("🚀 开始串行爬取")
+    print("🚀 开始并行爬取")
     print("="*70)
     print(f"\n目标关键词: {KEYWORDS}")
     print(f"爬取平台: {', '.join([PLATFORM_NAMES.get(p, p) for p in PLATFORMS])}")
-    print(f"爬取方式: 逐个平台依次执行")
+    print(f"爬取方式: 所有平台同时启动")
     print(f"数据格式: {SAVE_DATA_OPTION.upper()}")
     print(f"登录方式: {LOGIN_TYPE.upper()}")
+    if PLATFORM_OVERRIDES:
+        for p, cfg in PLATFORM_OVERRIDES.items():
+            name = PLATFORM_NAMES.get(p, p)
+            overrides_str = ", ".join(f"{k}={v}" for k, v in cfg.items())
+            print(f"  {name} 专属配置: {overrides_str}")
     print("\n" + "="*70 + "\n")
 
     start_time = time.time()
     results = []
 
-    # 串行执行：逐个平台爬取
-    for i, platform in enumerate(PLATFORMS, 1):
+    # 过滤掉未配置 Cookie 的平台（仅 Cookie 登录模式下）
+    active_platforms = []
+    for platform in PLATFORMS:
         platform_name = PLATFORM_NAMES.get(platform, platform)
-        print(f"\n{'='*70}")
-        print(f"进度: {i}/{len(PLATFORMS)} - {platform_name}")
-        print(f"{'='*70}")
-
-        # 如果使用 Cookie 登录，检查该平台是否已配置
         if is_cookie_login_enabled() and cookies_config:
             if not cookies_config.is_cookie_configured(platform):
                 print(f"⚠️  [{platform.upper()}] {platform_name} 未配置 Cookie，跳过")
                 results.append((platform, False, 0))
                 continue
+        active_platforms.append(platform)
 
-        try:
-            result = run_single_platform(platform)
-            results.append(result)
-        except Exception as e:
-            print(f"❌ [{platform.upper()}] 执行异常: {e}")
-            results.append((platform, False, 0))
+    if not active_platforms:
+        print("❌ 没有可爬取的平台")
+        return False
 
-        # 如果不是最后一个平台，简单提示即将爬取下一个
-        if i < len(PLATFORMS):
-            next_platform = PLATFORMS[i]
-            next_name = PLATFORM_NAMES.get(next_platform, next_platform)
-            print(f"\n⏭️  准备爬取下一个平台: {next_name}")
-            time.sleep(1)  # 短暂延迟，让用户看到提示
+    print(f"▶ 同时启动 {len(active_platforms)} 个平台的爬虫...\n")
+
+    with ThreadPoolExecutor(max_workers=len(active_platforms)) as executor:
+        futures = {executor.submit(run_single_platform, p): p for p in active_platforms}
+        for future in as_completed(futures):
+            try:
+                result = future.result()
+                results.append(result)
+            except Exception as e:
+                platform = futures[future]
+                print(f"❌ [{platform.upper()}] 未捕获异常: {e}")
+                results.append((platform, False, 0))
 
     total_duration = time.time() - start_time
 
@@ -367,10 +397,10 @@ def serial_crawl():
 
     print(f"总体统计:")
     print(f"  ✅ 成功: {success_count}/{total_attempted} 个平台")
-    print(f"  ⏱️  总耗时: {total_duration:.1f} 秒\n")
+    print(f"  ⏱️  总耗时: {total_duration:.1f} 秒（并行，非累加）\n")
 
     print(f"详细结果:")
-    for platform, success, duration in results:
+    for platform, success, duration in sorted(results, key=lambda x: x[0]):
         name = PLATFORM_NAMES.get(platform, platform)
         if success:
             print(f"  ✅ [{platform.upper()}] {name:12} - 成功 (耗时: {duration:.1f}秒)")
@@ -380,20 +410,7 @@ def serial_crawl():
             else:
                 print(f"  ❌ [{platform.upper()}] {name:12} - 失败 (Cookie可能已失效)")
 
-    if success_count < total_attempted:
-        failed_platforms = [(p, success) for p, success, _ in results if not success]
-        if failed_platforms:
-            print(f"\n失败的平台:")
-            for platform, _ in failed_platforms:
-                name = PLATFORM_NAMES.get(platform, platform)
-                if is_cookie_login_enabled() and cookies_config and not cookies_config.is_cookie_configured(platform):
-                    print(f"  ⚠️  {name:12} - 未配置 Cookie，请参考 COOKIE_GUIDE.md")
-                else:
-                    log_file = Path(__file__).parent / f"logs/{platform}_crawl.log"
-                    print(f"  ❌ {name:12} - Cookie可能已失效，请更新 cookies_config.py 或查看日志: {log_file}")
-
-    print(f"\n💾 数据保存位置: {Path(__file__).parent / 'data'}")
-    print(f"📋 日志保存位置: {Path(__file__).parent / 'logs'}")
+    print(f"\n💾 数据保存位置: Supabase")
     print("="*70 + "\n")
 
     return success_count > 0
@@ -418,11 +435,11 @@ def main():
     # 仅爬取模式
     if args.crawl_only:
         print("🚀 爬取模式（跳过登录检查）\n")
-        success = serial_crawl()
+        success = parallel_crawl()
         return 0 if success else 1
 
-    # 正常模式：检查登录 -> 爬取
-    print("🔄 自动模式：检查登录状态 -> 串行爬取\n")
+    # 正常模式：检查登录 -> 并行爬取
+    print("🔄 自动模式：检查登录状态 -> 并行爬取\n")
 
     # 步骤1: 检查登录状态
     has_available = check_and_login()
@@ -432,8 +449,8 @@ def main():
         print("📖 Cookie 配置指南: COOKIE_GUIDE.md")
         return 1
 
-    # 步骤2: 串行爬取
-    success = serial_crawl()
+    # 步骤2: 并行爬取
+    success = parallel_crawl()
 
     if success:
         print("\n🎉 爬取任务完成！")

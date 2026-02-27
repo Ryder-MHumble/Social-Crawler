@@ -32,10 +32,16 @@ ENABLE_RELEVANCE_FILTER = True
 # Content MUST contain at least one of these strings (case-insensitive for English)
 # to be considered relevant. These should be the core entity names you care about.
 RELEVANCE_MUST_CONTAIN = [
-    "中关村人工智能研究院",
-    "中关村学院",
+    "人工智能研究院",
+    "中关村",
     "北京中关村学院",
     "中关村AI研究院",
+    "智源",
+    "河套",
+    "创智"
+    "三小只",
+    "三小智",
+    "博"
 ]
 LOGIN_TYPE = "qrcode"  # qrcode or phone or cookie
 COOKIES = ""
@@ -64,7 +70,7 @@ SAVE_LOGIN_STATE = True
 # Whether to enable CDP mode - use the user's existing Chrome/Edge browser to crawl, providing better anti-detection capabilities
 # Once enabled, the user's Chrome/Edge browser will be automatically detected and started, and controlled through the CDP protocol.
 # This method uses the real browser environment, including the user's extensions, cookies and settings, greatly reducing the risk of detection.
-ENABLE_CDP_MODE = True
+ENABLE_CDP_MODE = False
 
 # CDP debug port, used to communicate with the browser
 # If the port is occupied, the system will automatically try the next available port
@@ -101,8 +107,8 @@ USER_DATA_DIR = "%s_user_data_dir"  # %s will be replaced by platform name
 START_PAGE = 1
 
 # Control the number of crawled videos/posts per keyword per run
-# Keep this low (10-20) to avoid triggering anti-bot detection
-CRAWLER_MAX_NOTES_COUNT = 10
+# Note: relevance filter will further reduce this to only matching posts
+CRAWLER_MAX_NOTES_COUNT = 30
 
 # Controlling the number of concurrent crawlers (1 = safest, looks most human-like)
 MAX_CONCURRENCY_NUM = 1
@@ -114,12 +120,11 @@ ENABLE_GET_MEIDAS = False
 ENABLE_GET_COMMENTS = True
 
 # Control the number of crawled first-level comments (single video/post)
-# Keep moderate to avoid excessive requests per post
-CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES = 5
+CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES = 20
 
-# Whether to enable the mode of crawling second-level comments. By default, crawling of second-level comments is not enabled.
-# Enabling this significantly increases request volume — higher ban risk
-ENABLE_GET_SUB_COMMENTS = False
+# Whether to enable the mode of crawling second-level comments (replies).
+# Enabled — captures full discussion threads for richer opinion mining data.
+ENABLE_GET_SUB_COMMENTS = True
 
 # word cloud related
 # Whether to enable generating comment word clouds

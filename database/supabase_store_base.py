@@ -22,20 +22,68 @@ class SupabaseStoreBase:
     that maps common fields + platform_data JSONB.
     """
 
-    # Class-level dict: share relevant content IDs across all instances of the same platform.
-    # This is needed because StoreFactory.create_store() creates a new instance on every call,
-    # but we need to remember which content_ids passed the relevance filter so their comments
-    # can also be saved.
+    # Class-level dicts: shared across all instances of the same platform within one process.
+    # StoreFactory.create_store() creates a new instance on every call, so class-level state
+    # is the only way to persist data across calls within the same crawl session.
+
+    # content_ids that passed the relevance filter (comments are saved only for these)
     _relevant_content_ids_by_platform: dict[str, Set[str]] = {}
+
+    # content_ids already fully upserted this session OR already existing in DB
+    # (dedup across keyword searches AND across sessions)
+    _seen_content_ids_by_platform: dict[str, Set[str]] = {}
+
+    # platforms for which we've already pre-loaded existing IDs from DB this session
+    _preloaded_platforms: set = set()
 
     def __init__(self, platform: str):
         self.platform = platform
         if platform not in self._relevant_content_ids_by_platform:
             self._relevant_content_ids_by_platform[platform] = set()
+        if platform not in self._seen_content_ids_by_platform:
+            self._seen_content_ids_by_platform[platform] = set()
 
     @property
     def _relevant_content_ids(self) -> Set[str]:
         return self._relevant_content_ids_by_platform[self.platform]
+
+    @property
+    def _seen_content_ids(self) -> Set[str]:
+        return self._seen_content_ids_by_platform[self.platform]
+
+    # ------------------------------------------------------------------
+    # Cross-session dedup: pre-load existing IDs from DB
+    # ------------------------------------------------------------------
+    async def _ensure_preloaded(self):
+        """
+        Pre-load existing content IDs from DB into in-memory sets (runs once per platform per session).
+
+        This serves two purposes:
+        1. Dedup: content already in DB won't be re-upserted on subsequent runs.
+        2. Comment continuity: IDs pre-loaded into _relevant_content_ids allow comments
+           for previously-saved content to be saved even on re-runs where that content
+           is skipped.  This is the key fix for "comments only on first-run platforms".
+        """
+        if self.platform in self._preloaded_platforms:
+            return
+
+        self._preloaded_platforms.add(self.platform)
+        try:
+            sb = get_supabase()
+            result = sb.table("contents").select("content_id").eq("platform", self.platform).execute()
+            rows = result.data or []
+            existing_ids = {str(row["content_id"]) for row in rows if row.get("content_id")}
+            self._seen_content_ids.update(existing_ids)
+            self._relevant_content_ids.update(existing_ids)
+            utils.logger.info(
+                f"[SupabaseStore] Preloaded {len(existing_ids)} existing {self.platform} content IDs "
+                f"(dedup + comment continuity)"
+            )
+        except Exception as e:
+            utils.logger.warning(
+                f"[SupabaseStore] Failed to preload existing IDs for {self.platform}: {e}. "
+                f"Dedup and comment continuity for this session may be incomplete."
+            )
 
     # ------------------------------------------------------------------
     # Relevance filter
@@ -69,6 +117,21 @@ class SupabaseStoreBase:
         if not content_id:
             return
 
+        content_id = str(content_id)
+
+        # Pre-load existing IDs from DB on first call for this platform
+        await self._ensure_preloaded()
+
+        # Cross-session + within-session dedup: skip content already in DB or seen this run
+        if content_id in self._seen_content_ids:
+            utils.logger.debug(
+                f"[SupabaseStore] SKIP (already in DB or processed this session) "
+                f"{self.platform}/{content_id}"
+            )
+            # NOTE: content_id is also in _relevant_content_ids (set during preload or
+            # first-time save), so its comments can still be saved.
+            return
+
         # Relevance filter: skip content that doesn't mention target entities
         title = content_item.get("title", "")
         description = content_item.get("description", "")
@@ -77,10 +140,13 @@ class SupabaseStoreBase:
                 f"[SupabaseStore] SKIPPED (irrelevant) {self.platform}/{content_id}: "
                 f"{(title or description or '')[:60]}"
             )
+            # Mark seen so we don't re-evaluate on future keyword searches
+            self._seen_content_ids.add(content_id)
             return
 
-        # Mark this content_id as relevant so its comments will also be saved
-        self._relevant_content_ids.add(str(content_id))
+        # Mark as seen and relevant
+        self._seen_content_ids.add(content_id)
+        self._relevant_content_ids.add(content_id)
 
         sb = get_supabase()
         now_ts = int(get_current_timestamp())
@@ -127,10 +193,18 @@ class SupabaseStoreBase:
         if not comment_id:
             return
 
+        # Pre-load ensures _relevant_content_ids contains IDs from previous runs
+        await self._ensure_preloaded()
+
         # Only save comments belonging to content that passed the relevance filter
+        # (either in this session or a previous one — both are in _relevant_content_ids)
         if getattr(config, "ENABLE_RELEVANCE_FILTER", False):
             parent_content_id = str(comment_item.get("content_id", ""))
             if parent_content_id and parent_content_id not in self._relevant_content_ids:
+                utils.logger.debug(
+                    f"[SupabaseStore] SKIP comment {self.platform}/{comment_id}: "
+                    f"parent content {parent_content_id} not relevant"
+                )
                 return
 
         sb = get_supabase()
