@@ -90,7 +90,7 @@ class SupabaseStoreBase:
         self._preloaded_platforms.add(self.platform)
         try:
             sb = get_supabase()
-            result = sb.table("contents").select("content_id").eq("platform", self.platform).execute()
+            result = sb.table("sentiment_contents").select("content_id").eq("platform", self.platform).execute()
             rows = result.data or []
             existing_ids = {str(row["content_id"]) for row in rows if row.get("content_id")}
             self._seen_content_ids.update(existing_ids)
@@ -226,7 +226,7 @@ class SupabaseStoreBase:
 
         # Upsert: on conflict(platform, content_id) update engagement metrics
         result = (
-            sb.table("contents")
+            sb.table("sentiment_contents")
             .upsert(row, on_conflict="platform,content_id")
             .execute()
         )
@@ -294,7 +294,7 @@ class SupabaseStoreBase:
         }
 
         result = (
-            sb.table("comments")
+            sb.table("sentiment_comments")
             .upsert(row, on_conflict="platform,comment_id")
             .execute()
         )
@@ -332,7 +332,7 @@ class SupabaseStoreBase:
         }
 
         result = (
-            sb.table("creators")
+            sb.table("sentiment_creators")
             .upsert(row, on_conflict="platform,user_id")
             .execute()
         )

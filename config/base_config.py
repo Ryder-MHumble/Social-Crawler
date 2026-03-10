@@ -53,7 +53,7 @@ RELEVANCE_EXCLUDE_KEYWORDS: list[str] = [
 # Minimum total engagement (liked_count + comment_count) for a post to be saved.
 # Posts with fewer combined interactions are treated as low-quality / spam and skipped.
 # Set to 0 to disable.
-MIN_CONTENT_ENGAGEMENT = 2
+MIN_CONTENT_ENGAGEMENT = 0  # 临时调整为 0，用于排查问题
 
 # Minimum character length for a comment to be saved.
 # Comments shorter than this (e.g. "哈哈", "666", single emoji) are skipped.
