@@ -50,7 +50,13 @@ class VibeCodingStoreWrapper:
             saved = await self.vibe_store.save_vibe_coding_content(content_item)
             if saved is not None:
                 # Track that this content was saved so comments can be flushed later
-                content_id = str(content_item.get("content_id", ""))
+                content_id = str(
+                    content_item.get("content_id")
+                    or content_item.get("note_id")
+                    or content_item.get("aweme_id")
+                    or content_item.get("video_id")
+                    or ""
+                )
                 if content_id:
                     self._vibe_saved_ids.add(content_id)
         except Exception as e:
@@ -66,7 +72,11 @@ class VibeCodingStoreWrapper:
             await self.original_store.store_comment(comment_item)
             return
 
-        content_id = str(comment_item.get("content_id", ""))
+        content_id = str(
+            comment_item.get("content_id")
+            or comment_item.get("note_id")
+            or ""
+        )
         if not content_id or content_id not in self._vibe_saved_ids:
             return
 

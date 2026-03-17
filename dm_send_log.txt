@@ -1,0 +1,27 @@
+2026-03-17 13:51:29,388 - [INFO] - 共读取到 201 位博主
+2026-03-17 13:51:29,388 - [INFO] - 并发配置: 每批 5 个标签页同时发送
+
+2026-03-17 13:51:31,803 - [INFO] - 🌐 正在打开 B站...
+2026-03-17 13:51:32,356 - [INFO] - 
+============================================================
+2026-03-17 13:51:32,356 - [INFO] - ⚠️  请在浏览器中完成登录
+2026-03-17 13:51:32,356 - [INFO] - 登录完成后，回到终端按回车键继续...
+2026-03-17 13:51:32,356 - [INFO] - ============================================================
+
+按回车键继续...Traceback (most recent call last):
+  File "/Users/sunminghao/Desktop/MediaCrawler/send_bilibili_dm_manual.py", line 256, in <module>
+    asyncio.run(main())
+    ~~~~~~~~~~~^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.3/Frameworks/Python.framework/Versions/3.14/lib/python3.14/asyncio/runners.py", line 204, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.3/Frameworks/Python.framework/Versions/3.14/lib/python3.14/asyncio/runners.py", line 127, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.3/Frameworks/Python.framework/Versions/3.14/lib/python3.14/asyncio/base_events.py", line 719, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/sunminghao/Desktop/MediaCrawler/send_bilibili_dm_manual.py", line 214, in main
+    input("按回车键继续...")
+    ~~~~~^^^^^^^^^^^^^^^^^^^
+EOFError: EOF when reading a line

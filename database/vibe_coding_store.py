@@ -96,6 +96,22 @@ class VibeCodingStore(SupabaseStoreBase):
         else:
             return "other"
 
+    @staticmethod
+    def _parse_count(val) -> int:
+        """Parse count value, handling Chinese number formats like '1.7万'."""
+        if not val:
+            return 0
+        s = str(val).strip()
+        if '万' in s:
+            try:
+                return int(float(s.replace('万', '')) * 10000)
+            except Exception:
+                return 0
+        try:
+            return int(float(s))
+        except Exception:
+            return 0
+
     async def save_vibe_coding_content(
         self,
         content_item: Dict,
@@ -108,7 +124,14 @@ class VibeCodingStore(SupabaseStoreBase):
             content_item: Content data dict (same format as sentiment_contents)
             top_comments: Optional list of top comment dicts for idea mining
         """
-        content_id = content_item.get("content_id")
+        # Support both 'content_id' and platform-specific IDs (e.g. 'note_id' for XHS)
+        content_id = (
+            content_item.get("content_id")
+            or content_item.get("note_id")
+            or content_item.get("aweme_id")
+            or content_item.get("video_id")
+            or content_item.get("weibo_id")
+        )
         if not content_id:
             return
 
@@ -124,8 +147,9 @@ class VibeCodingStore(SupabaseStoreBase):
             )
             return
 
-        title = content_item.get("title", "")
-        description = content_item.get("description", "")
+        title = content_item.get("title", "") or ""
+        # Support both 'description' and 'desc' field names
+        description = content_item.get("description") or content_item.get("desc", "") or ""
 
         # Check vibe coding keyword match
         matched_keywords = self._matches_vibe_coding_keywords(title, description)
@@ -137,8 +161,8 @@ class VibeCodingStore(SupabaseStoreBase):
 
         # Engagement filter (higher threshold for quality)
         min_engagement = getattr(config, "VIBE_CODING_MIN_ENGAGEMENT", 10)
-        liked = int(content_item.get("liked_count", 0) or 0)
-        comments = int(content_item.get("comment_count", 0) or 0)
+        liked = self._parse_count(content_item.get("liked_count", 0))
+        comments = self._parse_count(content_item.get("comment_count", 0))
         if liked + comments < min_engagement:
             utils.logger.debug(
                 f"[VibeCodingStore] SKIP (low engagement: {liked}👍 {comments}💬) "
@@ -175,24 +199,38 @@ class VibeCodingStore(SupabaseStoreBase):
                 for c in top_comments[:max_comments]
             ]
 
+        # Normalize platform-specific field names
+        content_url = (
+            content_item.get("content_url")
+            or content_item.get("note_url")
+            or content_item.get("aweme_url")
+            or ""
+        )
+        cover_url = (
+            content_item.get("cover_url")
+            or content_item.get("image_list", "").split(",")[0] if isinstance(content_item.get("image_list"), str) else ""
+            or ""
+        )
+        publish_time = content_item.get("publish_time") or content_item.get("time")
+
         row = {
             "id": hash_value,
             "platform": self.platform,
             "content_id": content_id,
-            "content_type": content_item.get("content_type", ""),
+            "content_type": content_item.get("content_type") or content_item.get("type", ""),
             "title": title,
             "description": description,
-            "content_url": content_item.get("content_url", ""),
-            "cover_url": content_item.get("cover_url", ""),
+            "content_url": content_url,
+            "cover_url": cover_url,
             "user_id": str(content_item.get("user_id", "")),
             "nickname": content_item.get("nickname", ""),
             "avatar": content_item.get("avatar", ""),
             "ip_location": content_item.get("ip_location", ""),
             "liked_count": liked,
             "comment_count": comments,
-            "share_count": int(content_item.get("share_count", 0) or 0),
-            "collected_count": int(content_item.get("collected_count", 0) or 0),
-            "publish_time": content_item.get("publish_time"),
+            "share_count": self._parse_count(content_item.get("share_count", 0)),
+            "collected_count": self._parse_count(content_item.get("collected_count", 0)),
+            "publish_time": publish_time,
             "vibe_coding_keywords": matched_keywords,
             "trend_category": trend_category,
             "top_comments": top_comments_json,
