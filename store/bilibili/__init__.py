@@ -30,6 +30,7 @@ from var import source_keyword_var
 from ._store_impl import *
 from .bilibilli_store_media import *
 from store.supabase_store_impl import BiliSupabaseStoreImplement
+from store.vibe_coding_wrapper import VibeCodingStoreWrapper
 
 
 class BiliStoreFactory:
@@ -49,7 +50,14 @@ class BiliStoreFactory:
         store_class = BiliStoreFactory.STORES.get(config.SAVE_DATA_OPTION)
         if not store_class:
             raise ValueError("[BiliStoreFactory.create_store] Invalid save option only supported csv or db or json or sqlite or mongodb or excel ...")
-        return store_class()
+
+        original_store = store_class()
+
+        # Wrap with VibeCodingStoreWrapper if vibe coding collection is enabled
+        if getattr(config, "ENABLE_VIBE_CODING_COLLECTION", False):
+            return VibeCodingStoreWrapper("bili", original_store)
+
+        return original_store
 
 
 async def update_bilibili_video(video_item: Dict):

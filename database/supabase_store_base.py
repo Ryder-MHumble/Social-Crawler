@@ -202,7 +202,14 @@ class SupabaseStoreBase:
         sb = get_supabase()
         now_ts = int(get_current_timestamp())
 
+        # Generate a unique numeric ID from platform + content_id
+        # Use hash to create a stable, deterministic ID
+        import hashlib
+        hash_input = f"{self.platform}:{content_id}".encode('utf-8')
+        hash_value = int(hashlib.sha256(hash_input).hexdigest()[:15], 16)  # Use first 15 hex chars as int
+
         row = {
+            "id": hash_value,
             "platform": self.platform,
             "content_id": str(content_id),
             "content_type": content_item.get("content_type", ""),
@@ -224,10 +231,10 @@ class SupabaseStoreBase:
             "last_modify_ts": now_ts,
         }
 
-        # Upsert: on conflict(platform, content_id) update engagement metrics
+        # Upsert: automatically uses the unique constraint on (platform, content_id)
         result = (
             sb.table("sentiment_contents")
-            .upsert(row, on_conflict="platform,content_id")
+            .upsert(row)
             .execute()
         )
         self._new_content_by_platform[self.platform] += 1
@@ -274,7 +281,13 @@ class SupabaseStoreBase:
         sb = get_supabase()
         now_ts = int(get_current_timestamp())
 
+        # Generate a unique numeric ID from platform + comment_id
+        import hashlib
+        hash_input = f"{self.platform}:{comment_id}".encode('utf-8')
+        hash_value = int(hashlib.sha256(hash_input).hexdigest()[:15], 16)
+
         row = {
+            "id": hash_value,
             "platform": self.platform,
             "comment_id": str(comment_id),
             "content_id": str(comment_item.get("content_id", "")),
@@ -295,7 +308,7 @@ class SupabaseStoreBase:
 
         result = (
             sb.table("sentiment_comments")
-            .upsert(row, on_conflict="platform,comment_id")
+            .upsert(row)
             .execute()
         )
         self._new_comment_by_platform[self.platform] += 1
@@ -316,7 +329,13 @@ class SupabaseStoreBase:
         sb = get_supabase()
         now_ts = int(get_current_timestamp())
 
+        # Generate a unique numeric ID from platform + user_id
+        import hashlib
+        hash_input = f"{self.platform}:{user_id}".encode('utf-8')
+        hash_value = int(hashlib.sha256(hash_input).hexdigest()[:15], 16)
+
         row = {
+            "id": hash_value,
             "platform": self.platform,
             "user_id": str(user_id),
             "nickname": creator_item.get("nickname", ""),
@@ -333,7 +352,7 @@ class SupabaseStoreBase:
 
         result = (
             sb.table("sentiment_creators")
-            .upsert(row, on_conflict="platform,user_id")
+            .upsert(row)
             .execute()
         )
         utils.logger.info(
@@ -399,7 +418,7 @@ class SupabaseStoreBase:
 
         result = (
             sb.table("bilibili_contacts")
-            .upsert(row, on_conflict="up_id,fan_id")
+            .upsert(row)
             .execute()
         )
         return result
@@ -427,7 +446,7 @@ class SupabaseStoreBase:
 
         result = (
             sb.table("bilibili_dynamics")
-            .upsert(row, on_conflict="dynamic_id")
+            .upsert(row)
             .execute()
         )
         return result
