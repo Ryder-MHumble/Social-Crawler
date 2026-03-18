@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-B站自动发送私信脚本（并发版本 - 简化登录）
+B站自动发送私信脚本（并发版本 - 简化登录 + 数据库记录）
 手动确认登录后按回车继续
 """
 
@@ -9,6 +9,7 @@ import asyncio
 from playwright.async_api import async_playwright, BrowserContext
 import logging
 from typing import List, Dict
+from dm_record_store import DMRecordStore
 
 # 配置日志
 logging.basicConfig(
@@ -16,6 +17,14 @@ logging.basicConfig(
     format='%(asctime)s - [%(levelname)s] - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# 初始化数据库存储
+try:
+    db_store = DMRecordStore()
+    logger.info("✅ 数据库连接成功")
+except Exception as e:
+    logger.warning(f"⚠️  数据库连接失败: {e}，将不记录到数据库")
+    db_store = None
 
 # 并发配置
 CONCURRENT_TABS = 5  # 同时打开的标签页数量
@@ -34,6 +43,12 @@ MESSAGE_TEMPLATE = """hihi你好呀，抱歉打扰啦，我是北京中关村学
 async def send_dm_to_user(context: BrowserContext, user_id: str, username: str, message: str, tab_id: int) -> bool:
     """给指定用户发送私信"""
     page = None
+
+    # 检查是否已经发送过
+    if db_store and db_store.is_already_sent(user_id):
+        logger.info(f"[Tab{tab_id}] ⏭️  {username} 已发送过，跳过")
+        return True
+
     try:
         page = await context.new_page()
 
@@ -122,10 +137,21 @@ async def send_dm_to_user(context: BrowserContext, user_id: str, username: str, 
             await page.wait_for_timeout(2000)
 
         logger.info(f"[Tab{tab_id}] ✅ 成功向 {username} 发送私信")
+
+        # 保存到数据库
+        if db_store:
+            db_store.save_dm_record(user_id, username, message, "success")
+
         return True
 
     except Exception as e:
-        logger.error(f"[Tab{tab_id}] ❌ {username} 发送失败: {str(e)}")
+        error_msg = str(e)
+        logger.error(f"[Tab{tab_id}] ❌ {username} 发送失败: {error_msg}")
+
+        # 保存失败记录到数据库
+        if db_store:
+            db_store.save_dm_record(user_id, username, message, "failed", error_msg)
+
         return False
     finally:
         if page:

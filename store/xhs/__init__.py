@@ -29,7 +29,7 @@ from var import source_keyword_var
 from .xhs_store_media import *
 from ._store_impl import *
 from store.supabase_store_impl import XhsSupabaseStoreImplement
-from store.vibe_coding_wrapper import VibeCodingStoreWrapper
+from vibe_coding.wrapper import VibeCodingStoreWrapper
 
 
 class XhsStoreFactory:
@@ -53,8 +53,12 @@ class XhsStoreFactory:
         original_store = store_class()
 
         # Wrap with VibeCodingStoreWrapper if vibe coding collection is enabled
-        if getattr(config, "ENABLE_VIBE_CODING_COLLECTION", False):
-            return VibeCodingStoreWrapper("xhs", original_store)
+        try:
+            import vibe_coding.config as vc_cfg
+            if vc_cfg.ENABLE_VIBE_CODING_COLLECTION:
+                return VibeCodingStoreWrapper("xhs", original_store)
+        except ImportError:
+            pass
 
         return original_store
 

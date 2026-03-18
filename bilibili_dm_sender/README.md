@@ -1,127 +1,209 @@
-# B站私信自动发送工具
+# B站私信批量发送工具
 
-## 📁 文件说明
+自动化批量发送B站私信，支持并发发送、数据库记录、去重等功能。
 
-### 主要脚本
+## 📁 文件结构
 
-1. **send_bilibili_dm_manual.py** ⭐ 推荐使用
-   - 并发版本（5个标签页同时发送）
-   - 手动确认登录（按回车继续）
-   - 反自动化检测
-   - 直接访问私信页面
-
-2. **send_bilibili_dm.py**
-   - 旧版本（自动登录检测）
-   - 仅供参考
-
-3. **start_dm_sender.sh** ⭐ 快速启动
-   - 一键启动脚本
-   - 显示配置信息
-
-### 辅助工具
-
-4. **monitor_progress.sh**
-   - Shell版本的进度监控
-
-5. **monitor_realtime.py**
-   - Python版本的实时监控
-   - 更智能的日志显示
-
-6. **test_bilibili_structure.py**
-   - 测试工具，用于检查B站页面结构
-   - 帮助调试选择器问题
-
-### 文档
-
-7. **BILIBILI_DM_README.md**
-   - 详细使用说明
-   - 注意事项和故障排查
+```
+bilibili_dm_sender/
+├── openclaw_creators.csv          # 博主数据（201位）
+├── send_bilibili_dm_manual.py     # 主发送脚本（带数据库记录）⭐
+├── dm_record_store.py             # 数据库存储模块
+├── schema.sql                     # 数据库表结构
+├── check_dm_status.py             # 检查发送状态
+├── monitor_realtime.py            # 实时监控脚本
+├── start_dm_sender.sh             # 启动脚本
+└── README.md                      # 本文档
+```
 
 ## 🚀 快速开始
 
-### 方式1：使用启动脚本（推荐）
+### 1. 安装依赖
+
+```bash
+pip install playwright supabase
+playwright install chromium
+```
+
+### 2. 配置数据库
+
+在 Supabase SQL Editor 中执行 `schema.sql` 创建表：
+
+```sql
+-- 执行 schema.sql 中的所有SQL语句
+```
+
+### 3. 配置环境变量
+
+确保 `config/base_config.py` 中配置了：
+
+```python
+SUPABASE_URL = "your_supabase_url"
+SUPABASE_KEY = "your_supabase_key"
+```
+
+### 4. 运行发送脚本
 
 ```bash
 cd /Users/sunminghao/Desktop/MediaCrawler/bilibili_dm_sender
 ./start_dm_sender.sh
 ```
 
-### 方式2：直接运行Python脚本
+或直接运行：
 
 ```bash
-cd /Users/sunminghao/Desktop/MediaCrawler/bilibili_dm_sender
 python3 send_bilibili_dm_manual.py
 ```
 
-## 📊 使用流程
+## 📊 数据库表结构
 
-1. **运行脚本** → 浏览器自动打开
-2. **手动登录** → 在浏览器中完成B站登录
-3. **按回车键** → 回到终端按回车继续
-4. **自动发送** → 脚本开始并发发送私信
-5. **查看结果** → 显示成功率统计
+### `bilibili_dm_records` 表
 
-## ⚙️ 配置说明
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | BIGSERIAL | 主键 |
+| user_id | TEXT | B站用户ID |
+| username | TEXT | 用户名 |
+| message | TEXT | 发送的消息内容 |
+| status | TEXT | 发送状态 (success/failed) |
+| error_msg | TEXT | 错误信息（失败时） |
+| sent_at | TIMESTAMP | 发送时间 |
+| campaign | TEXT | 活动标识 (openclaw_2026) |
+| created_at | TIMESTAMP | 创建时间 |
 
-### 数据源
+**唯一约束**: `(user_id, campaign, status)` - 同一活动中每个用户只能有一条成功记录
 
-脚本读取上级目录的CSV文件：
-```
-../openclaw_creators.csv
-```
+## 🔍 查询统计
 
-### 并发配置
+### 查看成功发送数量
 
-在 `send_bilibili_dm_manual.py` 中修改：
-```python
-CONCURRENT_TABS = 5  # 同时打开的标签页数量
-```
-
-### 私信文案
-
-在 `send_bilibili_dm_manual.py` 中修改：
-```python
-MESSAGE_TEMPLATE = """你的私信内容..."""
+```sql
+SELECT campaign, COUNT(*) as success_count
+FROM bilibili_dm_records
+WHERE status = 'success'
+GROUP BY campaign;
 ```
 
-## 📈 性能指标
+### 查看失败记录
 
-- **博主数量**: 201 位
-- **并发数量**: 5 个标签页
-- **预计时间**: 6-8 分钟
-- **预计成功率**: 80-90%
+```sql
+SELECT username, error_msg, sent_at
+FROM bilibili_dm_records
+WHERE status = 'failed'
+ORDER BY sent_at DESC;
+```
+
+### 查看今天发送的记录
+
+```sql
+SELECT username, status, sent_at
+FROM bilibili_dm_records
+WHERE DATE(sent_at) = CURRENT_DATE
+ORDER BY sent_at DESC;
+```
+
+## 🛠️ 功能特性
+
+### ✅ 已实现
+
+1. **并发发送**: 5个标签页同时发送，效率提升5倍
+2. **数据库记录**: 自动记录每条私信的发送状态
+3. **去重机制**: 自动跳过已成功发送的用户
+4. **反自动化检测**: 隐藏webdriver特征
+5. **实时进度**: 显示发送进度和统计信息
+6. **错误处理**: 记录失败原因，便于排查
+7. **批次延迟**: 避免触发平台限制
+
+### 📝 私信文案
+
+```
+hihi你好呀，抱歉打扰啦，我是北京中关村学院的研究员，看到你主页分享了很多Openclaw的落地应用，想邀请你参加我们举办的龙虾大赛，基本信息如下：
+
+中关村学院正在办的"OpenClaw"比赛🎯，分学术龙虾、生产力龙虾和生活龙虾三条赛道，核心是看谁的"虾"解决实际问题能力更强。全场最佳奖金20万+100亿Token，每条赛道还各有10个获奖名额，截止日期3月19日23：59，还有最后两天时间
+
+报名也很简单：上传个链接讲清楚你的虾能做什么就行，不用交代码，核心看实际应用效果，如果结合硬件会额外加分
+
+报名链接：https://claw.lab.bza.edu.cn
+
+详细信息可以看这条连接：https://mp.weixin.qq.com/s/RfqXfunmEP1NLIln-9YUvQ
+```
+
+## 📈 使用流程
+
+1. **启动脚本** → 浏览器自动打开
+2. **手动登录** → 在浏览器中登录B站
+3. **按回车继续** → 脚本开始自动发送
+4. **并发发送** → 5个标签页同时工作
+5. **自动记录** → 每条消息都记录到数据库
+6. **完成统计** → 显示成功/失败数量
+
+## 🔧 工具脚本
+
+### 检查发送状态
+
+```bash
+python3 check_dm_status.py
+```
+
+从浏览器会话中统计今天发送的私信数量。
+
+### 实时监控
+
+```bash
+python3 monitor_realtime.py
+```
+
+实时显示发送进度和统计信息。
+
+### 查询数据库
+
+```bash
+python3 dm_record_store.py
+```
+
+查询数据库中的发送记录和统计信息。
 
 ## ⚠️ 注意事项
 
-1. **反检测**: 已配置反自动化检测，避免"浏览器版本太低"提示
-2. **频率控制**: 批次间自动延迟10秒
-3. **账号安全**: 建议分时段发送，避免触发限制
-4. **私信限制**: 部分博主可能关闭私信功能
+1. **登录状态**: 首次运行需要手动登录，之后会保持登录状态
+2. **发送限制**: B站可能有私信频率限制，脚本已添加延迟避免触发
+3. **数据库配置**: 确保Supabase配置正确，否则无法记录数据
+4. **去重功能**: 重复运行脚本会自动跳过已发送的用户
+5. **错误处理**: 失败的消息会记录到数据库，可以后续重试
 
-## 🔧 故障排查
+## 📊 性能指标
+
+- **总用户数**: 201位博主
+- **并发数**: 5个标签页
+- **预计时间**: 6-8分钟
+- **成功率**: 取决于网络和平台限制
+
+## 🐛 故障排查
 
 ### 问题1: 找不到输入框
 
 **原因**: B站页面结构变化
+**解决**: 检查页面元素，更新选择器
 
-**解决**: 运行测试脚本检查页面结构
-```bash
-python3 test_bilibili_structure.py
-```
+### 问题2: 数据库连接失败
 
-### 问题2: 登录检测失败
+**原因**: Supabase配置错误
+**解决**: 检查 `config/base_config.py` 中的配置
 
-**原因**: 登录选择器不匹配
+### 问题3: 发送失败
 
-**解决**: 使用手动确认版本（send_bilibili_dm_manual.py）
-
-### 问题3: 浏览器显示"版本太低"
-
-**原因**: B站检测到自动化浏览器
-
-**解决**: 已在脚本中添加反检测代码
+**原因**: 网络问题或平台限制
+**解决**: 查看数据库中的 `error_msg` 字段
 
 ## 📝 更新日志
+
+### v3.0 (2026-03-17)
+
+- ✅ 添加数据库记录功能
+- ✅ 实现去重机制
+- ✅ 优化错误处理
+- ✅ 更新私信文案
+- ✅ 创建完整文档
 
 ### v2.0 (2026-03-17)
 - ✅ 添加并发发送功能（5个标签页）
@@ -134,13 +216,9 @@ python3 test_bilibili_structure.py
 - ✅ 基础串行发送功能
 - ✅ 自动登录检测
 
-## 📞 技术支持
+## 📞 联系方式
 
-如遇问题，请检查：
-1. Python 版本 >= 3.7
-2. Playwright 是否正确安装
-3. 网络连接是否正常
-4. B站账号是否正常
+如有问题，请联系项目维护者。
 
 ## 📄 许可说明
 
