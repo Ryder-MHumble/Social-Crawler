@@ -1,0 +1,4 @@
+"""
+Vibe coding task package.
+"""
+

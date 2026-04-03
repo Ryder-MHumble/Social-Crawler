@@ -92,7 +92,11 @@ class VibeCodingStoreWrapper:
         except Exception as e:
             utils.logger.debug(f"[VibeCodingWrapper] flush top_comments failed: {e}")
 
-    async def store_creator(self, creator_item: Dict):
+    async def store_creator(self, creator_item: Dict = None, **kwargs):
+        # Some platform stores call `store_creator(creator=...)`.
+        if creator_item is None:
+            creator_item = kwargs.get("creator")
+
         if not vc_cfg.ENABLE_VIBE_CODING_COLLECTION:
             await self.original_store.store_creator(creator_item)
 

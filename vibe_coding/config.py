@@ -11,7 +11,7 @@ from datetime import datetime
 
 # ===================== Master Switch =====================
 
-ENABLE_VIBE_CODING_COLLECTION = True
+ENABLE_VIBE_CODING_COLLECTION = False
 
 # ===================== Platforms =====================
 
