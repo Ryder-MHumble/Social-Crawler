@@ -43,7 +43,7 @@ import config
 from base.base_crawler import AbstractCrawler
 from proxy.proxy_ip_pool import IpInfoModel, create_ip_pool
 from store import bilibili as bilibili_store
-from tools import utils
+from tools import runtime_paths, utils
 from tools.cdp_browser import CDPBrowserManager
 from var import crawler_type_var, source_keyword_var
 
@@ -89,7 +89,9 @@ class BilibiliCrawler(AbstractCrawler):
                 chromium = playwright.chromium
                 self.browser_context = await self.launch_browser(chromium, None, self.user_agent, headless=config.HEADLESS)
                 # stealth.min.js is a js script to prevent the website from detecting the crawler.
-                await self.browser_context.add_init_script(path="libs/stealth.min.js")
+                await self.browser_context.add_init_script(
+                    path=str(runtime_paths.get_repo_path("libs", "stealth.min.js"))
+                )
 
             self.context_page = await self.browser_context.new_page()
             await self.context_page.goto(self.index_url)
@@ -355,20 +357,28 @@ class BilibiliCrawler(AbstractCrawler):
                 utils.logger.info(f"[BilibiliCrawler.get_comments] begin get video_id: {video_id} comments ...")
                 await asyncio.sleep(config.CRAWLER_MAX_SLEEP_SEC)
                 utils.logger.info(f"[BilibiliCrawler.get_comments] Sleeping for {config.CRAWLER_MAX_SLEEP_SEC} seconds after fetching comments for video {video_id}")
-                await self.bili_client.get_video_all_comments(
-                    video_id=video_id,
-                    crawl_interval=config.CRAWLER_MAX_SLEEP_SEC,
-                    is_fetch_sub_comments=config.ENABLE_GET_SUB_COMMENTS,
-                    callback=bilibili_store.batch_update_bilibili_video_comments,
-                    max_count=config.CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES,
+                comment_timeout = float(getattr(config, "BILIBILI_COMMENT_TASK_TIMEOUT_SEC", 900) or 900)
+                await asyncio.wait_for(
+                    self.bili_client.get_video_all_comments(
+                        video_id=video_id,
+                        crawl_interval=config.CRAWLER_MAX_SLEEP_SEC,
+                        is_fetch_sub_comments=config.ENABLE_GET_SUB_COMMENTS,
+                        callback=bilibili_store.batch_update_bilibili_video_comments,
+                        max_count=config.CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES,
+                    ),
+                    timeout=comment_timeout,
                 )
 
+            except asyncio.TimeoutError:
+                utils.logger.warning(
+                    f"[BilibiliCrawler.get_comments] timeout after {comment_timeout:.0f}s when fetching "
+                    f"comments for video_id: {video_id}, skip this video"
+                )
             except DataFetchError as ex:
                 utils.logger.error(f"[BilibiliCrawler.get_comments] get video_id: {video_id} comment error: {ex}")
             except Exception as e:
                 utils.logger.error(f"[BilibiliCrawler.get_comments] may be been blocked, err:{e}")
-                # Propagate the exception to be caught by the main loop
-                raise
+                return
 
     async def crawl_official_accounts(self) -> None:
         """Crawl videos and comments from designated official Bilibili accounts.
@@ -530,7 +540,10 @@ class BilibiliCrawler(AbstractCrawler):
         if config.SAVE_LOGIN_STATE:
             # feat issue #14
             # we will save login state to avoid login every time
-            user_data_dir = os.path.join(os.getcwd(), "browser_data", config.USER_DATA_DIR % config.PLATFORM)  # type: ignore
+            runtime_paths.ensure_runtime_layout()
+            user_data_dir = str(
+                runtime_paths.get_browser_user_data_dir(config.PLATFORM, config.USER_DATA_DIR)
+            )
             browser_context = await chromium.launch_persistent_context(
                 user_data_dir=user_data_dir,
                 accept_downloads=True,

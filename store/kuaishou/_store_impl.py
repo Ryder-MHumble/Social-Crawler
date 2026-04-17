@@ -39,7 +39,6 @@ from database.db_session import get_session
 from database.models import KuaishouVideo, KuaishouVideoComment
 from tools import utils, words
 from var import crawler_type_var
-from database.mongodb_store_base import MongoDBStoreBase
 
 
 def calculate_number_of_files(file_store_path: str) -> int:
@@ -176,6 +175,8 @@ class KuaishouMongoStoreImplement(AbstractStore):
     """Kuaishou MongoDB storage implementation"""
 
     def __init__(self):
+        from database.mongodb_store_base import MongoDBStoreBase
+
         self.mongo_store = MongoDBStoreBase(collection_prefix="kuaishou")
 
     async def store_content(self, content_item: Dict):

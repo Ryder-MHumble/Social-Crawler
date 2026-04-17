@@ -37,7 +37,7 @@ from base.base_crawler import AbstractCrawler
 from model.m_xiaohongshu import NoteUrlInfo, CreatorUrlInfo
 from proxy.proxy_ip_pool import IpInfoModel, create_ip_pool
 from store import xhs as xhs_store
-from tools import utils
+from tools import runtime_paths, utils
 from tools.cdp_browser import CDPBrowserManager
 from var import crawler_type_var, source_keyword_var
 
@@ -89,7 +89,9 @@ class XiaoHongShuCrawler(AbstractCrawler):
                     headless=config.HEADLESS,
                 )
                 # stealth.min.js is a js script to prevent the website from detecting the crawler.
-                await self.browser_context.add_init_script(path="libs/stealth.min.js")
+                await self.browser_context.add_init_script(
+                    path=str(runtime_paths.get_repo_path("libs", "stealth.min.js"))
+                )
 
             self.context_page = await self.browser_context.new_page()
             await self.context_page.goto(self.index_url)
@@ -250,11 +252,24 @@ class XiaoHongShuCrawler(AbstractCrawler):
             # Mark source as official account — store/filter layers check this prefix
             source_keyword_var.set(f"@{name}")
 
-            all_notes_list = await self.xhs_client.get_all_notes_by_creator(
-                user_id=user_id,
-                crawl_interval=float(config.CRAWLER_MAX_SLEEP_SEC),
-                callback=self.fetch_creator_notes_detail,
-            )
+            try:
+                all_notes_list = await self.xhs_client.get_all_notes_by_creator(
+                    user_id=user_id,
+                    crawl_interval=float(config.CRAWLER_MAX_SLEEP_SEC),
+                    callback=self.fetch_creator_notes_detail,
+                )
+            except RetryError as ex:
+                utils.logger.warning(
+                    f"[XiaoHongShuCrawler.crawl_official_accounts] Failed to crawl @{name} ({user_id}), "
+                    f"skip this account: {ex}"
+                )
+                continue
+            except Exception as ex:
+                utils.logger.exception(
+                    f"[XiaoHongShuCrawler.crawl_official_accounts] Unexpected error when crawling "
+                    f"@{name} ({user_id}), skip this account: {ex}"
+                )
+                continue
 
             note_ids = [n.get("note_id") for n in all_notes_list if n.get("note_id")]
             xsec_tokens = [n.get("xsec_token", "") for n in all_notes_list]
@@ -340,7 +355,11 @@ class XiaoHongShuCrawler(AbstractCrawler):
                     note_detail = await self.xhs_client.get_note_by_id_from_html(note_id, xsec_source, xsec_token,
                                                                                  enable_cookie=True)
                     if not note_detail:
-                        raise Exception(f"[get_note_detail_async_task] Failed to get note detail, Id: {note_id}")
+                        utils.logger.warning(
+                            f"[get_note_detail_async_task] Failed to get note detail after API and HTML fallback, "
+                            f"skip note_id: {note_id}"
+                        )
+                        return None
 
                 note_detail.update({"xsec_token": xsec_token, "xsec_source": xsec_source})
 
@@ -358,6 +377,11 @@ class XiaoHongShuCrawler(AbstractCrawler):
                 return None
             except KeyError as ex:
                 utils.logger.error(f"[XiaoHongShuCrawler.get_note_detail_async_task] have not fund note detail note_id:{note_id}, err: {ex}")
+                return None
+            except Exception as ex:
+                utils.logger.exception(
+                    f"[XiaoHongShuCrawler.get_note_detail_async_task] Unexpected error for note_id:{note_id}, err: {ex}"
+                )
                 return None
 
     async def batch_get_note_comments(self, note_list: List[str], xsec_tokens: List[str]):
@@ -437,7 +461,10 @@ class XiaoHongShuCrawler(AbstractCrawler):
         if config.SAVE_LOGIN_STATE:
             # feat issue #14
             # we will save login state to avoid login every time
-            user_data_dir = os.path.join(os.getcwd(), "browser_data", config.USER_DATA_DIR % config.PLATFORM)  # type: ignore
+            runtime_paths.ensure_runtime_layout()
+            user_data_dir = str(
+                runtime_paths.get_browser_user_data_dir(config.PLATFORM, config.USER_DATA_DIR)
+            )
             browser_context = await chromium.launch_persistent_context(
                 user_data_dir=user_data_dir,
                 accept_downloads=True,

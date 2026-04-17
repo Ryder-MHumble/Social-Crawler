@@ -3,7 +3,7 @@
 Vibe Coding Crawler Orchestration
 
 Patches global config temporarily, then runs platform crawlers.
-Called by run_vibe_coding.py (project root).
+Called by vibe_coding.cli (with run_vibe_coding.py kept as a compatibility wrapper).
 """
 
 import asyncio

@@ -40,7 +40,6 @@ from tools import utils, words
 from database.db_session import get_session
 from var import crawler_type_var
 from tools.async_file_writer import AsyncFileWriter
-from database.mongodb_store_base import MongoDBStoreBase
 
 
 def calculate_number_of_files(file_store_path: str) -> int:
@@ -206,6 +205,8 @@ class TieBaMongoStoreImplement(AbstractStore):
     """Tieba MongoDB storage implementation"""
 
     def __init__(self):
+        from database.mongodb_store_base import MongoDBStoreBase
+
         self.mongo_store = MongoDBStoreBase(collection_prefix="tieba")
 
     async def store_content(self, content_item: Dict):

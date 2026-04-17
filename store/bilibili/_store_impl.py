@@ -40,7 +40,6 @@ from database.models import BilibiliVideoComment, BilibiliVideo, BilibiliUpInfo,
 from tools.async_file_writer import AsyncFileWriter
 from tools import utils, words
 from var import crawler_type_var
-from database.mongodb_store_base import MongoDBStoreBase
 
 
 class BiliCsvStoreImplement(AbstractStore):
@@ -346,6 +345,8 @@ class BiliMongoStoreImplement(AbstractStore):
     """Bilibili MongoDB storage implementation"""
 
     def __init__(self):
+        from database.mongodb_store_base import MongoDBStoreBase
+
         self.mongo_store = MongoDBStoreBase(collection_prefix="bilibili")
 
     async def store_content(self, content_item: Dict):

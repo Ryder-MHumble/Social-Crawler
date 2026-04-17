@@ -4,7 +4,6 @@ Supabase client singleton for MediaCrawler.
 Uses supabase-py async client to interact with Supabase (PostgreSQL).
 """
 
-import asyncio
 from typing import Optional
 
 from supabase import create_client, Client
@@ -41,6 +40,10 @@ class SupabaseClient:
     def client(self) -> Client:
         return self._ensure_client()
 
+    def reset(self) -> None:
+        """Drop the current client so the next access recreates it."""
+        self._client = None
+
 
 # Module-level convenience accessor
 _sb_client = SupabaseClient()
@@ -49,3 +52,8 @@ _sb_client = SupabaseClient()
 def get_supabase() -> Client:
     """Get the singleton Supabase client."""
     return _sb_client.client
+
+
+def reset_supabase() -> None:
+    """Reset the singleton client after transient connection failures."""
+    _sb_client.reset()

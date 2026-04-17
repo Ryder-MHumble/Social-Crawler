@@ -17,5 +17,12 @@
 # 使用本代码即表示您同意遵守上述原则和LICENSE中的所有条款。
 
 from .crawler_manager import CrawlerManager, crawler_manager
+from .task_center import TaskCenterService, get_task_center_service, task_center_service
 
-__all__ = ["CrawlerManager", "crawler_manager"]
+__all__ = [
+    "CrawlerManager",
+    "crawler_manager",
+    "TaskCenterService",
+    "get_task_center_service",
+    "task_center_service",
+]

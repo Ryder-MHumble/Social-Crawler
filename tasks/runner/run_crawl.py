@@ -11,6 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from tasks.common.engine import TaskExecutionEngine
 from tasks.runner.registry import load_task_specs, resolve_task
+from tools import runtime_paths
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,6 +67,7 @@ def choose_task_interactively(task_specs):
 
 
 def main() -> int:
+    runtime_paths.ensure_runtime_layout()
     args = parse_args()
     task_specs = load_task_specs(PROJECT_ROOT, sys.executable)
 

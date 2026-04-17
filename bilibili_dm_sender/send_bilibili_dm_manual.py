@@ -6,10 +6,18 @@ B站自动发送私信脚本（并发版本 - 简化登录 + 数据库记录）
 
 import csv
 import asyncio
+import sys
+from pathlib import Path
 from playwright.async_api import async_playwright, BrowserContext
 import logging
 from typing import List, Dict
 from dm_record_store import DMRecordStore
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from tools import runtime_paths
 
 # 配置日志
 logging.basicConfig(
@@ -187,7 +195,16 @@ async def send_dm_batch(context: BrowserContext, creators_batch: List[Dict], bat
 
 async def main():
     """主函数"""
-    csv_file = "../openclaw_creators.csv"
+    runtime_paths.ensure_runtime_layout()
+    runtime_paths.seed_openclaw_csv_from_legacy()
+    csv_candidates = [
+        runtime_paths.get_openclaw_csv_path(),
+        runtime_paths.get_legacy_openclaw_csv_path(),
+    ]
+    csv_file = next((path for path in csv_candidates if path.exists()), None)
+    if not csv_file:
+        logger.error("CSV file not found in runtime/input or repository root.")
+        return
     creators = []
 
     try:

@@ -36,7 +36,7 @@ from base.base_crawler import AbstractCrawler
 from model.m_baidu_tieba import TiebaCreator, TiebaNote
 from proxy.proxy_ip_pool import IpInfoModel, ProxyIpPool, create_ip_pool
 from store import tieba as tieba_store
-from tools import utils
+from tools import runtime_paths, utils
 from tools.cdp_browser import CDPBrowserManager
 from var import crawler_type_var, source_keyword_var
 
@@ -613,9 +613,10 @@ class TieBaCrawler(AbstractCrawler):
         if config.SAVE_LOGIN_STATE:
             # feat issue #14
             # we will save login state to avoid login every time
-            user_data_dir = os.path.join(
-                os.getcwd(), "browser_data", config.USER_DATA_DIR % config.PLATFORM
-            )  # type: ignore
+            runtime_paths.ensure_runtime_layout()
+            user_data_dir = str(
+                runtime_paths.get_browser_user_data_dir(config.PLATFORM, config.USER_DATA_DIR)
+            )
             browser_context = await chromium.launch_persistent_context(
                 user_data_dir=user_data_dir,
                 accept_downloads=True,

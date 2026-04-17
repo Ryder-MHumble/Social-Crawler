@@ -59,14 +59,15 @@ ENABLE_VIBE_CODING_COLLECTION = True
 
 ```bash
 # 爬取所有平台
+python -m vibe_coding.cli
 python run_vibe_coding.py
 
 # 爬取指定平台
-python run_vibe_coding.py --platform xhs
-python run_vibe_coding.py --platform xhs bili
+python -m vibe_coding.cli --platform xhs
+python -m vibe_coding.cli --platform xhs bili
 
 # 查看关键词配置
-python run_vibe_coding.py --list-keywords
+python -m vibe_coding.cli --list-keywords
 ```
 
 ---
@@ -336,7 +337,7 @@ vibe_coding/
 ├── schema.sql           # Supabase 表结构
 └── README.md            # 本文档
 
-run_vibe_coding.py       # 项目根目录启动脚本
+run_vibe_coding.py       # 项目根目录兼容启动脚本
 ```
 
 ---

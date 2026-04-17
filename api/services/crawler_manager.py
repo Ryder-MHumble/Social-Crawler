@@ -22,7 +22,7 @@ import signal
 import os
 from typing import Optional, List
 from datetime import datetime
-from pathlib import Path
+from tools import runtime_paths
 
 from ..schemas import CrawlerStartRequest, LogEntry
 
@@ -40,7 +40,7 @@ class CrawlerManager:
         self._logs: List[LogEntry] = []
         self._read_task: Optional[asyncio.Task] = None
         # Project root directory
-        self._project_root = Path(__file__).parent.parent.parent
+        self._project_root = runtime_paths.get_repo_root()
         # Log queue - for pushing to WebSocket
         self._log_queue: Optional[asyncio.Queue] = None
 
@@ -204,7 +204,7 @@ class CrawlerManager:
 
     def _build_command(self, config: CrawlerStartRequest) -> list:
         """Build main.py command line arguments"""
-        cmd = ["uv", "run", "python", "main.py"]
+        cmd = ["uv", "run", "python", "apps/crawler/run_main.py"]
 
         cmd.extend(["--platform", config.platform.value])
         cmd.extend(["--lt", config.login_type.value])

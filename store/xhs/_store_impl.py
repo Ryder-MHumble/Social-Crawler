@@ -35,7 +35,6 @@ from database.models import XhsNote, XhsNoteComment, XhsCreator
 from tools.async_file_writer import AsyncFileWriter
 from tools.time_util import get_current_timestamp
 from var import crawler_type_var
-from database.mongodb_store_base import MongoDBStoreBase
 from tools import utils
 from store.excel_store_base import ExcelStoreBase
 
@@ -285,6 +284,8 @@ class XhsMongoStoreImplement(AbstractStore):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        from database.mongodb_store_base import MongoDBStoreBase
+
         self.mongo_store = MongoDBStoreBase(collection_prefix="xhs")
 
     async def store_content(self, content_item: Dict):

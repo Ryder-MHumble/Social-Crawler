@@ -22,15 +22,21 @@ Start command: uvicorn api.main:app --port 8080 --reload
 Or: python -m api.main
 """
 import asyncio
-import os
 import subprocess
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from tools import runtime_paths
 
-from .routers import crawler_router, data_router, websocket_router
+from .routers import (
+    crawler_router,
+    data_router,
+    task_center_router,
+    task_center_ws_router,
+    websocket_router,
+)
 
 app = FastAPI(
     title="MediaCrawler WebUI API",
@@ -39,7 +45,8 @@ app = FastAPI(
 )
 
 # Get webui static files directory
-WEBUI_DIR = os.path.join(os.path.dirname(__file__), "webui")
+runtime_paths.ensure_runtime_layout()
+WEBUI_DIR = runtime_paths.get_webui_dir_with_fallback()
 
 # CORS configuration - allow frontend dev server access
 app.add_middleware(
@@ -58,20 +65,22 @@ app.add_middleware(
 # Register routers
 app.include_router(crawler_router, prefix="/api")
 app.include_router(data_router, prefix="/api")
+app.include_router(task_center_router, prefix="/api")
 app.include_router(websocket_router, prefix="/api")
+app.include_router(task_center_ws_router, prefix="/api")
 
 
 @app.get("/")
 async def serve_frontend():
     """Return frontend page"""
-    index_path = os.path.join(WEBUI_DIR, "index.html")
-    if os.path.exists(index_path):
+    index_path = WEBUI_DIR / "index.html"
+    if index_path.exists():
         return FileResponse(index_path)
     return {
         "message": "MediaCrawler WebUI API",
         "version": "1.0.0",
         "docs": "/docs",
-        "note": "WebUI not found, please build it first: cd webui && npm run build"
+        "note": "WebUI not found, please build it first: cd frontend/task_center && npm run build"
     }
 
 
@@ -84,12 +93,12 @@ async def health_check():
 async def check_environment():
     """Check if MediaCrawler environment is configured correctly"""
     try:
-        # Run uv run main.py --help command to check environment
+        # Run uv run apps/crawler/run_main.py --help command to check environment
         process = await asyncio.create_subprocess_exec(
-            "uv", "run", "main.py", "--help",
+            "uv", "run", "apps/crawler/run_main.py", "--help",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            cwd="."  # Project root directory
+            cwd=str(runtime_paths.get_repo_root())
         )
         stdout, stderr = await asyncio.wait_for(
             process.communicate(),
@@ -159,24 +168,24 @@ async def get_config_options():
             {"value": "creator", "label": "Creator Mode"},
         ],
         "save_options": [
-            {"value": "json", "label": "JSON File"},
+            {"value": "json", "label": "JSON File (Local Default)"},
             {"value": "csv", "label": "CSV File"},
             {"value": "excel", "label": "Excel File"},
-            {"value": "sqlite", "label": "SQLite Database"},
-            {"value": "db", "label": "MySQL Database"},
-            {"value": "mongodb", "label": "MongoDB Database"},
+            {"value": "sqlite", "label": "SQLite Database (Extension)"},
+            {"value": "db", "label": "MySQL Database (Extension)"},
+            {"value": "mongodb", "label": "MongoDB Database (Extension)"},
         ],
     }
 
 
 # Mount static resources - must be placed after all routes
-if os.path.exists(WEBUI_DIR):
-    assets_dir = os.path.join(WEBUI_DIR, "assets")
-    if os.path.exists(assets_dir):
+if WEBUI_DIR.exists():
+    assets_dir = WEBUI_DIR / "assets"
+    if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
     # Mount logos directory
-    logos_dir = os.path.join(WEBUI_DIR, "logos")
-    if os.path.exists(logos_dir):
+    logos_dir = WEBUI_DIR / "logos"
+    if logos_dir.exists():
         app.mount("/logos", StaticFiles(directory=logos_dir), name="logos")
     # Mount other static files (e.g., vite.svg)
     app.mount("/static", StaticFiles(directory=WEBUI_DIR), name="webui-static")

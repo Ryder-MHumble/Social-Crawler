@@ -162,4 +162,5 @@ if __name__ == "__main__":
         except Exception:
             pass
 
+    print("[Deprecated Entry] main.py is kept for compatibility. Target layout: apps/crawler.")
     run(main, async_cleanup, cleanup_timeout_seconds=15.0, on_first_interrupt=_force_stop)

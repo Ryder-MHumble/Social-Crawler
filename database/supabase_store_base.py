@@ -5,10 +5,11 @@ Provides upsert operations for the unified schema (contents, comments, creators)
 Each platform store inherits this and provides platform-specific field mapping.
 """
 
-from typing import Dict, Optional, Set
+import asyncio
+from typing import Any, Callable, Dict, Optional, Set
 
 import config
-from database.supabase_client import get_supabase
+from database.supabase_client import get_supabase, reset_supabase
 from tools import utils
 from tools.time_util import get_current_timestamp
 
@@ -71,6 +72,42 @@ class SupabaseStoreBase:
     def _seen_content_ids(self) -> Set[str]:
         return self._seen_content_ids_by_platform[self.platform]
 
+    async def _execute_with_retry(
+        self,
+        action_name: str,
+        operation: Callable[[], Any],
+    ) -> Any:
+        """
+        Execute a Supabase operation with limited retries.
+
+        Transient TLS/proxy failures occasionally break the underlying sync client.
+        Recreating the singleton client between attempts is usually enough to recover.
+        """
+        max_attempts = max(1, int(getattr(config, "SUPABASE_MAX_RETRIES", 3) or 3))
+        base_delay = float(getattr(config, "SUPABASE_RETRY_DELAY_SEC", 2) or 2)
+        last_error: Optional[Exception] = None
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return operation().execute()
+            except Exception as exc:
+                last_error = exc
+                reset_supabase()
+                if attempt < max_attempts:
+                    delay = base_delay * attempt
+                    utils.logger.warning(
+                        f"[SupabaseStore] {action_name} failed for {self.platform} "
+                        f"(attempt {attempt}/{max_attempts}): {exc}. Retrying in {delay:.1f}s..."
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
+        utils.logger.warning(
+            f"[SupabaseStore] {action_name} failed for {self.platform} after "
+            f"{max_attempts} attempts: {last_error}. Skipping this write."
+        )
+        return None
+
     # ------------------------------------------------------------------
     # Cross-session dedup: pre-load existing IDs from DB
     # ------------------------------------------------------------------
@@ -89,8 +126,13 @@ class SupabaseStoreBase:
 
         self._preloaded_platforms.add(self.platform)
         try:
-            sb = get_supabase()
-            result = sb.table("sentiment_contents").select("content_id").eq("platform", self.platform).execute()
+            result = await self._execute_with_retry(
+                "preload existing content IDs",
+                lambda: get_supabase().table("sentiment_contents").select("content_id").eq("platform", self.platform),
+            )
+            if result is None:
+                return
+
             rows = result.data or []
             existing_ids = {str(row["content_id"]) for row in rows if row.get("content_id")}
             self._seen_content_ids.update(existing_ids)
@@ -199,7 +241,6 @@ class SupabaseStoreBase:
         self._seen_content_ids.add(content_id)
         self._relevant_content_ids.add(content_id)
 
-        sb = get_supabase()
         now_ts = int(get_current_timestamp())
 
         # Generate a unique numeric ID from platform + content_id
@@ -232,11 +273,12 @@ class SupabaseStoreBase:
         }
 
         # Upsert: automatically uses the unique constraint on (platform, content_id)
-        result = (
-            sb.table("sentiment_contents")
-            .upsert(row)
-            .execute()
+        result = await self._execute_with_retry(
+            f"upsert content {content_id}",
+            lambda: get_supabase().table("sentiment_contents").upsert(row),
         )
+        if result is None:
+            return None
         self._new_content_by_platform[self.platform] += 1
         utils.logger.info(
             f"[SupabaseStore] Upserted content {self.platform}/{content_id}"
@@ -278,7 +320,6 @@ class SupabaseStoreBase:
                 self._filtered_short_comment_by_platform[self.platform] += 1
                 return
 
-        sb = get_supabase()
         now_ts = int(get_current_timestamp())
 
         # Generate a unique numeric ID from platform + comment_id
@@ -306,11 +347,12 @@ class SupabaseStoreBase:
             "last_modify_ts": now_ts,
         }
 
-        result = (
-            sb.table("sentiment_comments")
-            .upsert(row)
-            .execute()
+        result = await self._execute_with_retry(
+            f"upsert comment {comment_id}",
+            lambda: get_supabase().table("sentiment_comments").upsert(row),
         )
+        if result is None:
+            return None
         self._new_comment_by_platform[self.platform] += 1
         utils.logger.info(
             f"[SupabaseStore] Upserted comment {self.platform}/{comment_id}"
@@ -326,7 +368,6 @@ class SupabaseStoreBase:
         if not user_id:
             return
 
-        sb = get_supabase()
         now_ts = int(get_current_timestamp())
 
         # Generate a unique numeric ID from platform + user_id
@@ -350,11 +391,12 @@ class SupabaseStoreBase:
             "last_modify_ts": now_ts,
         }
 
-        result = (
-            sb.table("sentiment_creators")
-            .upsert(row)
-            .execute()
+        result = await self._execute_with_retry(
+            f"upsert creator {user_id}",
+            lambda: get_supabase().table("sentiment_creators").upsert(row),
         )
+        if result is None:
+            return None
         utils.logger.info(
             f"[SupabaseStore] Upserted creator {self.platform}/{user_id}"
         )
@@ -401,7 +443,6 @@ class SupabaseStoreBase:
     # ------------------------------------------------------------------
     async def save_bilibili_contact(self, contact_item: Dict):
         """Upsert into bilibili_contacts table (Bilibili only)."""
-        sb = get_supabase()
         now_ts = int(get_current_timestamp())
 
         row = {
@@ -416,10 +457,9 @@ class SupabaseStoreBase:
             "last_modify_ts": now_ts,
         }
 
-        result = (
-            sb.table("bilibili_contacts")
-            .upsert(row)
-            .execute()
+        result = await self._execute_with_retry(
+            f"upsert bilibili contact {row['up_id']}->{row['fan_id']}",
+            lambda: get_supabase().table("bilibili_contacts").upsert(row),
         )
         return result
 
@@ -428,7 +468,6 @@ class SupabaseStoreBase:
     # ------------------------------------------------------------------
     async def save_bilibili_dynamic(self, dynamic_item: Dict):
         """Upsert into bilibili_dynamics table (Bilibili only)."""
-        sb = get_supabase()
         now_ts = int(get_current_timestamp())
 
         row = {
@@ -444,9 +483,8 @@ class SupabaseStoreBase:
             "last_modify_ts": now_ts,
         }
 
-        result = (
-            sb.table("bilibili_dynamics")
-            .upsert(row)
-            .execute()
+        result = await self._execute_with_retry(
+            f"upsert bilibili dynamic {row['dynamic_id']}",
+            lambda: get_supabase().table("bilibili_dynamics").upsert(row),
         )
         return result

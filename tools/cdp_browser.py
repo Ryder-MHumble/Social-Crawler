@@ -24,12 +24,13 @@ import socket
 import httpx
 import signal
 import atexit
+from pathlib import Path
 from typing import Optional, Dict, Any
 from playwright.async_api import Browser, BrowserContext, Playwright
 
 import config
 from tools.browser_launcher import BrowserLauncher
-from tools import utils
+from tools import runtime_paths, utils
 
 
 class CDPBrowserManager:
@@ -193,10 +194,13 @@ class CDPBrowserManager:
         # Set user data directory (if save login state is enabled)
         user_data_dir = None
         if config.SAVE_LOGIN_STATE:
-            user_data_dir = os.path.join(
-                os.getcwd(),
-                "browser_data",
-                f"cdp_{config.USER_DATA_DIR % config.PLATFORM}",
+            runtime_paths.ensure_runtime_layout()
+            user_data_dir = str(
+                runtime_paths.get_browser_user_data_dir(
+                    config.PLATFORM,
+                    config.USER_DATA_DIR,
+                    cdp=True,
+                )
             )
             os.makedirs(user_data_dir, exist_ok=True)
             utils.logger.info(f"[CDPBrowserManager] User data directory: {user_data_dir}")
@@ -317,11 +321,13 @@ class CDPBrowserManager:
         """
         Add anti-detection script
         """
-        if self.browser_context and os.path.exists(script_path):
+        candidate = Path(script_path)
+        script = candidate if candidate.is_absolute() else runtime_paths.get_repo_path(script_path)
+        if self.browser_context and script.exists():
             try:
-                await self.browser_context.add_init_script(path=script_path)
+                await self.browser_context.add_init_script(path=str(script))
                 utils.logger.info(
-                    f"[CDPBrowserManager] Added anti-detection script: {script_path}"
+                    f"[CDPBrowserManager] Added anti-detection script: {script}"
                 )
             except Exception as e:
                 utils.logger.warning(f"[CDPBrowserManager] Failed to add anti-detection script: {e}")

@@ -45,3 +45,12 @@ dependencies = [
 [[tool.uv.index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
 default = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-m \"not external\""
+markers = [
+    "external: requires live services, browsers, or third-party integrations",
+    "integration: multi-component tests that run locally",
+]

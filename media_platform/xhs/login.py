@@ -167,6 +167,16 @@ class XiaoHongShuLogin(AbstractLogin):
     async def login_by_qrcode(self):
         """login xiaohongshu website and keep webdriver login state"""
         utils.logger.info("[XiaoHongShuLogin.login_by_qrcode] Begin login xiaohongshu by qrcode ...")
+        # Some page variants are already authenticated when popup appears.
+        # If profile link is visible, skip qr-login flow directly.
+        try:
+            already_logged_in = await self.context_page.is_visible("a[href*='/user/profile/']", timeout=1200)
+            if already_logged_in:
+                utils.logger.info("[XiaoHongShuLogin.login_by_qrcode] Already logged in on page, skip qrcode flow.")
+                return
+        except Exception:
+            pass
+
         # login_selector = "div.login-container > div.left > div.qrcode > img"
         qrcode_img_selector = "xpath=//img[@class='qrcode-img']"
         # find login qrcode
@@ -180,6 +190,13 @@ class XiaoHongShuLogin(AbstractLogin):
             await asyncio.sleep(0.5)
             login_button_ele = self.context_page.locator("xpath=//*[@id='app']/div[1]/div[2]/div[1]/ul/div[1]/button")
             await login_button_ele.click()
+            try:
+                already_logged_in = await self.context_page.is_visible("a[href*='/user/profile/']", timeout=1200)
+                if already_logged_in:
+                    utils.logger.info("[XiaoHongShuLogin.login_by_qrcode] Already logged in after opening popup, skip qrcode.")
+                    return
+            except Exception:
+                pass
             base64_qrcode_img = await utils.find_login_qrcode(
                 self.context_page,
                 selector=qrcode_img_selector

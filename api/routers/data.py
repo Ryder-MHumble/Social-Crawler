@@ -23,11 +23,13 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
+from tools import runtime_paths
 
 router = APIRouter(prefix="/data", tags=["data"])
 
 # Data directory
-DATA_DIR = Path(__file__).parent.parent.parent / "data"
+runtime_paths.ensure_runtime_layout()
+DATA_DIR = runtime_paths.get_data_dir()
 
 
 def get_file_info(file_path: Path) -> dict:

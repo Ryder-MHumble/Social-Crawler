@@ -29,6 +29,7 @@ from urllib.parse import urlparse
 import cv2
 import httpx
 import numpy as np
+from tools import runtime_paths
 
 
 class Slide:
@@ -41,7 +42,8 @@ class Slide:
         :param gap: Gap image path or url
         :param bg: Background image with gap path or url
         """
-        self.img_dir = os.path.join(os.getcwd(), 'temp_image')
+        runtime_paths.ensure_runtime_layout()
+        self.img_dir = str(runtime_paths.get_runtime_dir() / "temp_image")
         if not os.path.exists(self.img_dir):
             os.makedirs(self.img_dir)
 
@@ -68,7 +70,8 @@ class Slide:
             }
             img_res = httpx.get(img, headers=headers)
             if img_res.status_code == 200:
-                img_path = f'./temp_image/{img_type}.jpg'
+                runtime_paths.ensure_runtime_layout()
+                img_path = str(runtime_paths.get_runtime_dir() / "temp_image" / f"{img_type}.jpg")
                 image = np.asarray(bytearray(img_res.content), dtype="uint8")
                 image = cv2.imdecode(image, cv2.IMREAD_COLOR)
                 if resize:

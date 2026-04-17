@@ -40,7 +40,6 @@ from database.models import ZhihuContent, ZhihuComment, ZhihuCreator
 from tools import utils, words
 from var import crawler_type_var
 from tools.async_file_writer import AsyncFileWriter
-from database.mongodb_store_base import MongoDBStoreBase
 
 def calculate_number_of_files(file_store_path: str) -> int:
     """Calculate the prefix sorting number for data save files, supporting writing to different files for each run
@@ -214,6 +213,8 @@ class ZhihuMongoStoreImplement(AbstractStore):
     """Zhihu MongoDB storage implementation"""
 
     def __init__(self):
+        from database.mongodb_store_base import MongoDBStoreBase
+
         self.mongo_store = MongoDBStoreBase(collection_prefix="zhihu")
 
     async def store_content(self, content_item: Dict):

@@ -2,10 +2,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tasks.common.template import TaskDefinition
+from tasks.creator_outreach.task import build_definition as build_creator_outreach_definition
 from tasks.common.models import TaskSpec
 from tasks.creator_outreach.task import build_task as build_creator_outreach_task
+from tasks.sentiment_monitor.task import build_definition as build_sentiment_definition
 from tasks.sentiment_monitor.task import build_task as build_sentiment_task
+from tasks.vibe_coding.task import build_definition as build_vibe_definition
 from tasks.vibe_coding.task import build_task as build_vibe_task
+
+
+def load_task_definitions() -> list[TaskDefinition]:
+    return [
+        build_sentiment_definition(),
+        build_creator_outreach_definition(),
+        build_vibe_definition(),
+    ]
 
 
 def load_task_specs(project_root: Path, python_executable: str) -> list[TaskSpec]:
@@ -25,3 +37,12 @@ def resolve_task(task_specs: list[TaskSpec], key: str) -> TaskSpec | None:
             return spec
     return None
 
+
+def resolve_definition(task_definitions: list[TaskDefinition], key: str) -> TaskDefinition | None:
+    normalized = key.strip().lower().replace("-", "_")
+    for definition in task_definitions:
+        alias_pool = {definition.template.slug}
+        normalized_alias_pool = {item.lower().replace("-", "_") for item in alias_pool}
+        if normalized in normalized_alias_pool:
+            return definition
+    return None

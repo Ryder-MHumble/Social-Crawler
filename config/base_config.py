@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 # Copyright (c) 2025 relakkes@gmail.com
 #
 # This file is part of MediaCrawler project.
@@ -7,23 +7,29 @@
 # Licensed under NON-COMMERCIAL LEARNING LICENSE 1.1
 #
 
-# 声明：本代码仅供学习和研究目的使用。使用者应遵守以下原则：
-# 1. 不得用于任何商业用途。
-# 2. 使用时应遵守目标平台的使用条款和robots.txt规则。
-# 3. 不得进行大规模爬取或对平台造成运营干扰。
-# 4. 应合理控制请求频率，避免给目标平台带来不必要的负担。
-# 5. 不得用于任何非法或不当的用途。
+# 澹版槑锛氭湰浠ｇ爜浠呬緵瀛︿範鍜岀爺绌剁洰鐨勪娇鐢ㄣ€備娇鐢ㄨ€呭簲閬靛畧浠ヤ笅鍘熷垯锛?
+# 1. 涓嶅緱鐢ㄤ簬浠讳綍鍟嗕笟鐢ㄩ€斻€?
+# 2. 浣跨敤鏃跺簲閬靛畧鐩爣骞冲彴鐨勪娇鐢ㄦ潯娆惧拰robots.txt瑙勫垯銆?
+# 3. 涓嶅緱杩涜澶ц妯＄埇鍙栨垨瀵瑰钩鍙伴€犳垚杩愯惀骞叉壈銆?
+# 4. 搴斿悎鐞嗘帶鍒惰姹傞鐜囷紝閬垮厤缁欑洰鏍囧钩鍙板甫鏉ヤ笉蹇呰鐨勮礋鎷呫€?
+# 5. 涓嶅緱鐢ㄤ簬浠讳綍闈炴硶鎴栦笉褰撶殑鐢ㄩ€斻€?
 #
-# 详细许可条款请参阅项目根目录下的LICENSE文件。
-# 使用本代码即表示您同意遵守上述原则和LICENSE中的所有条款。
+# 璇︾粏璁稿彲鏉℃璇峰弬闃呴」鐩牴鐩綍涓嬬殑LICENSE鏂囦欢銆?
+# 浣跨敤鏈唬鐮佸嵆琛ㄧず鎮ㄥ悓鎰忛伒瀹堜笂杩板師鍒欏拰LICENSE涓殑鎵€鏈夋潯娆俱€?
 
+import os
+from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_DEFAULT_RUNTIME_DIR = os.getenv("SOCIAL_CRAWLER_RUNTIME_DIR", str(_PROJECT_ROOT / "runtime"))
+_DEFAULT_DATA_DIR = os.getenv("SOCIAL_CRAWLER_DATA_DIR", str(Path(_DEFAULT_RUNTIME_DIR) / "data"))
 # Basic configuration
 PLATFORM = "xhs"  # Platform, xhs | dy | ks | bili | wb | tieba | zhihu
-KEYWORDS = "编程副业,编程兼职"  # Keyword search configuration, separated by English commas
+KEYWORDS = "缂栫▼鍓笟,缂栫▼鍏艰亴"  # Keyword search configuration, separated by English commas
 
 # ==================== Content Relevance Filter ====================
 # Enable to filter out content that doesn't actually mention the target entities.
-# Platform search is fuzzy — "中关村人工智能研究院" returns lots of generic AI content.
+# Platform search is fuzzy 鈥?"涓叧鏉戜汉宸ユ櫤鑳界爺绌堕櫌" returns lots of generic AI content.
 # When enabled, only content containing at least one RELEVANCE_MUST_CONTAIN keyword
 # in its title or description will be saved. Comments are saved only if their parent
 # content passed the filter.
@@ -32,48 +38,48 @@ ENABLE_RELEVANCE_FILTER = True
 # Content MUST contain at least one of these strings (case-insensitive for English)
 # to be considered relevant. These should be the core entity names you care about.
 RELEVANCE_MUST_CONTAIN = [
-    "人工智能研究院",
-    "中关村",
-    "北京中关村学院",
-    "中关村AI研究院",
-    "智源",
-    "河套",
-    "创智",
-    "三小只",
-    "三小智",
+    "ai_research_institute",
+    "zhongguancun",
+    "beijing_zhongguancun_college",
+    "zhongguancun_ai_research_institute",
+    "鏅烘簮",
+    "娌冲",
+    "鍒涙櫤",
+    "sanxiao_ke",
+    "sanxiao_zhi",
 ]
 
 # Content containing ANY of these strings will be excluded, even if it passes the above filter.
 # Use this to block obvious spam/ad patterns.
 RELEVANCE_EXCLUDE_KEYWORDS: list[str] = [
     # Examples (uncomment or add your own):
-    # "招聘", "广告", "转发抽奖", "点赞送福利",
+    # "鎷涜仒", "骞垮憡", "杞彂鎶藉", "鐐硅禐閫佺鍒?,
 ]
 
 # Minimum total engagement (liked_count + comment_count) for a post to be saved.
 # Posts with fewer combined interactions are treated as low-quality / spam and skipped.
 # Set to 0 to disable.
-MIN_CONTENT_ENGAGEMENT = 0  # 临时调整为 0，用于排查问题
+MIN_CONTENT_ENGAGEMENT = 0  # 涓存椂璋冩暣涓?0锛岀敤浜庢帓鏌ラ棶棰?
 
 # Minimum character length for a comment to be saved.
-# Comments shorter than this (e.g. "哈哈", "666", single emoji) are skipped.
+# Comments shorter than this (e.g. "鍝堝搱", "666", single emoji) are skipped.
 # Set to 0 to disable.
 MIN_COMMENT_LENGTH = 5
 
-# ==================== 官方账号爬取配置 ====================
-# 是否在每次爬取时额外抓取指定官方账号的内容（在关键词搜索之后运行）
-# 官方账号内容会绕过相关性过滤，source_keyword 记录为 "@{账号名称}" 以区分来源
+# ==================== 瀹樻柟璐﹀彿鐖彇閰嶇疆 ====================
+# 鏄惁鍦ㄦ瘡娆＄埇鍙栨椂棰濆鎶撳彇鎸囧畾瀹樻柟璐﹀彿鐨勫唴瀹癸紙鍦ㄥ叧閿瘝鎼滅储涔嬪悗杩愯锛?
+# 瀹樻柟璐﹀彿鍐呭浼氱粫杩囩浉鍏虫€ц繃婊わ紝source_keyword 璁板綍涓?"@{璐﹀彿鍚嶇О}" 浠ュ尯鍒嗘潵婧?
 ENABLE_OFFICIAL_ACCOUNTS_CRAWL = True
 
-# 小红书官方账号列表（爬取其所有帖子和评论）
+# 灏忕孩涔﹀畼鏂硅处鍙峰垪琛紙鐖彇鍏舵墍鏈夊笘瀛愬拰璇勮锛?
 XHS_OFFICIAL_ACCOUNTS = [
-    {"user_id": "5bebb72379896c00014f3295", "name": "北京中关村学院"},
-    {"user_id": "68685a82000000001d009ebb", "name": "上海创智学院"},
+    {"user_id": "5bebb72379896c00014f3295", "name": "beijing_zhongguancun_college"},
+    {"user_id": "68685a82000000001d009ebb", "name": "涓婃捣鍒涙櫤瀛﹂櫌"},
 ]
 
-# Bilibili 官方账号列表（爬取其所有视频和评论）
+# Bilibili 瀹樻柟璐﹀彿鍒楄〃锛堢埇鍙栧叾鎵€鏈夎棰戝拰璇勮锛?
 BILI_OFFICIAL_ACCOUNTS = [
-    {"uid": 85843243, "name": "北京中关村学院"},
+    {"uid": 85843243, "name": "beijing_zhongguancun_college"},
 ]
 
 LOGIN_TYPE = "qrcode"  # qrcode or phone or cookie
@@ -127,11 +133,12 @@ BROWSER_LAUNCH_TIMEOUT = 60
 AUTO_CLOSE_BROWSER = False
 
 # Data saving type option configuration. It is best to save to DB, with deduplication function.
-# Supported: csv | db | json | sqlite | excel | postgres | mongodb | supabase
-SAVE_DATA_OPTION = "supabase"  # csv or db or json or sqlite or excel or postgres or mongodb or supabase
+# Supported: json | csv | excel | sqlite | db | postgres | mongodb | supabase
+# Default to local JSON storage for safer out-of-box usage.
+SAVE_DATA_OPTION = "json"  # json or csv or excel or sqlite or db or postgres or mongodb or supabase
 
 # Data saving path, if not specified by default, it will be saved to the data folder.
-SAVE_DATA_PATH = ""
+SAVE_DATA_PATH = _DEFAULT_DATA_DIR
 
 # Browser file configuration cached by the user's browser
 USER_DATA_DIR = "%s_user_data_dir"  # %s will be replaced by platform name
@@ -156,7 +163,7 @@ ENABLE_GET_COMMENTS = True
 CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES = 20
 
 # Whether to enable the mode of crawling second-level comments (replies).
-# Enabled — captures full discussion threads for richer opinion mining data.
+# Enabled 鈥?captures full discussion threads for richer opinion mining data.
 ENABLE_GET_SUB_COMMENTS = True
 
 # word cloud related
@@ -165,17 +172,17 @@ ENABLE_GET_WORDCLOUD = False
 # Custom words and their groups
 # Add rule: xx:yy where xx is a custom-added phrase, and yy is the group name to which the phrase xx is assigned.
 CUSTOM_WORDS = {
-    "零几": "年份",  # Recognize "zero points" as a whole
-    "高频词": "专业术语",  # Example custom words
+    "闆跺嚑": "骞翠唤",  # Recognize "zero points" as a whole
+    "gaopin_ci": "zhuanye_shuyu",  # Example custom words
 }
 
 # Deactivate (disabled) word file path
-STOP_WORDS_FILE = "./docs/hit_stopwords.txt"
+STOP_WORDS_FILE = str(_PROJECT_ROOT / "docs" / "hit_stopwords.txt")
 
 # Chinese font file path
-FONT_PATH = "./docs/STZHONGS.TTF"
+FONT_PATH = str(_PROJECT_ROOT / "docs" / "STZHONGS.TTF")
 
-# Crawl interval (seconds) — random sleep between requests
+# Crawl interval (seconds) 鈥?random sleep between requests
 # Higher = safer. Recommended: 3-5 for normal use, 5-10 if you've been warned
 CRAWLER_MAX_SLEEP_SEC = 5
 
@@ -187,3 +194,4 @@ from .weibo_config import *
 from .tieba_config import *
 from .zhihu_config import *
 from .vibe_coding_config import *
+

@@ -1,0 +1,444 @@
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import threading
+import time
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+from tasks.common.models import TaskJob, TaskSpec, TaskStage
+
+RuntimeEventHandler = Callable[[dict[str, Any]], None]
+
+
+@dataclass
+class JobRuntime:
+    job: TaskJob
+    log_path: Path
+    status: str = "waiting"
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    exit_code: Optional[int] = None
+    line_count: int = 0
+    last_line: str = ""
+    process: Optional[subprocess.Popen] = None
+    reader_thread: Optional[threading.Thread] = None
+    log_fp: Optional[object] = None
+
+
+@dataclass
+class StageRuntime:
+    stage: TaskStage
+    jobs: list[JobRuntime]
+    status: str = "waiting"
+
+
+@dataclass
+class TaskRunContext:
+    run_id: str
+    task: TaskSpec
+    run_dir: Path
+    log_stream_path: Path
+    normalized_params: dict[str, Any]
+    preset_id: str | None = None
+    started_at: float = field(default_factory=time.time)
+    finished_at: Optional[float] = None
+    status: str = "running"
+    interrupted: bool = False
+    stages: list[StageRuntime] = field(default_factory=list)
+    log_entries: list[dict[str, Any]] = field(default_factory=list)
+    next_log_id: int = 1
+
+
+def generate_run_id(prefix: str = "run") -> str:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"{prefix}_{timestamp}_{uuid.uuid4().hex[:8]}"
+
+
+def serialize_run_context(context: TaskRunContext) -> dict[str, Any]:
+    return {
+        "id": context.run_id,
+        "task_slug": context.task.slug,
+        "title": context.task.title,
+        "status": context.status,
+        "preset_id": context.preset_id,
+        "normalized_params": context.normalized_params,
+        "started_at": datetime.fromtimestamp(context.started_at).isoformat(),
+        "finished_at": (
+            datetime.fromtimestamp(context.finished_at).isoformat()
+            if context.finished_at
+            else None
+        ),
+        "log_path": str(context.log_stream_path),
+        "stages": [
+            {
+                "key": runtime.stage.key,
+                "name": runtime.stage.name,
+                "concurrent": runtime.stage.concurrent,
+                "abort_on_failure": runtime.stage.abort_on_failure,
+                "status": runtime.status,
+                "jobs": [
+                    {
+                        "key": job_runtime.job.key,
+                        "name": job_runtime.job.name,
+                        "status": job_runtime.status,
+                        "cwd": str(job_runtime.job.cwd),
+                        "command": list(job_runtime.job.command),
+                        "log_path": str(job_runtime.log_path),
+                        "exit_code": job_runtime.exit_code,
+                        "line_count": job_runtime.line_count,
+                        "last_line": job_runtime.last_line,
+                        "started_at": (
+                            datetime.fromtimestamp(job_runtime.started_at).isoformat()
+                            if job_runtime.started_at
+                            else None
+                        ),
+                        "finished_at": (
+                            datetime.fromtimestamp(job_runtime.finished_at).isoformat()
+                            if job_runtime.finished_at
+                            else None
+                        ),
+                    }
+                    for job_runtime in runtime.jobs
+                ],
+            }
+            for runtime in context.stages
+        ],
+    }
+
+
+class TaskRuntimeExecutor:
+    def __init__(
+        self,
+        project_root: Path,
+        refresh_seconds: float = 1.0,
+        logs_root: Path | None = None,
+    ) -> None:
+        self.project_root = project_root
+        self.refresh_seconds = refresh_seconds
+        self.logs_root = logs_root or (project_root / "logs" / "task_runs")
+        self.logs_root.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+
+    def execute(
+        self,
+        task: TaskSpec,
+        *,
+        normalized_params: dict[str, Any] | None = None,
+        preset_id: str | None = None,
+        run_id: str | None = None,
+        stop_event: threading.Event | None = None,
+        event_handler: RuntimeEventHandler | None = None,
+    ) -> TaskRunContext:
+        stop_event = stop_event or threading.Event()
+        run_id = run_id or generate_run_id(task.slug)
+        run_dir = self.logs_root / f"{time.strftime('%Y%m%d_%H%M%S')}_{task.slug}_{run_id}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        log_stream_path = run_dir / "stream.jsonl"
+        context = TaskRunContext(
+            run_id=run_id,
+            task=task,
+            run_dir=run_dir,
+            log_stream_path=log_stream_path,
+            normalized_params=normalized_params or {},
+            preset_id=preset_id,
+            stages=[
+                StageRuntime(
+                    stage=stage,
+                    jobs=[
+                        JobRuntime(
+                            job=job,
+                            log_path=run_dir / f"{stage.key}__{job.key}.log",
+                        )
+                        for job in stage.jobs
+                    ],
+                )
+                for stage in task.stages
+            ],
+        )
+        self._emit_run_updated(context, event_handler)
+
+        try:
+            for stage_runtime in context.stages:
+                if stop_event.is_set():
+                    context.interrupted = True
+                    stage_runtime.status = "skipped"
+                    continue
+
+                stage_runtime.status = "running"
+                self._emit_run_updated(context, event_handler)
+                self._run_stage(context, stage_runtime, stop_event, event_handler)
+                if stop_event.is_set():
+                    context.interrupted = True
+                    break
+                if stage_runtime.status == "failed" and stage_runtime.stage.abort_on_failure:
+                    break
+
+            if context.interrupted:
+                for stage_runtime in context.stages:
+                    if stage_runtime.status == "waiting":
+                        stage_runtime.status = "skipped"
+                        for job_runtime in stage_runtime.jobs:
+                            job_runtime.status = "skipped"
+                context.status = "stopped"
+            else:
+                failed_jobs = sum(
+                    1
+                    for stage_runtime in context.stages
+                    for job_runtime in stage_runtime.jobs
+                    if job_runtime.status == "failed"
+                )
+                context.status = "success" if failed_jobs == 0 else "failed"
+            context.finished_at = time.time()
+            self._emit_run_updated(context, event_handler)
+            return context
+        except KeyboardInterrupt:
+            context.interrupted = True
+            context.status = "stopped"
+            context.finished_at = time.time()
+            self._terminate_running_jobs(context.stages)
+            self._emit_run_updated(context, event_handler)
+            return context
+
+    def _run_stage(
+        self,
+        context: TaskRunContext,
+        stage_runtime: StageRuntime,
+        stop_event: threading.Event,
+        event_handler: RuntimeEventHandler | None,
+    ) -> None:
+        if stage_runtime.stage.concurrent:
+            self._run_batch(context, stage_runtime, stage_runtime.jobs, stop_event, event_handler)
+            return
+
+        for index, runtime in enumerate(stage_runtime.jobs):
+            if stop_event.is_set():
+                stage_runtime.status = "stopped"
+                for pending in stage_runtime.jobs[index:]:
+                    if pending.status == "waiting":
+                        pending.status = "skipped"
+                self._emit_run_updated(context, event_handler)
+                return
+            self._run_batch(context, stage_runtime, [runtime], stop_event, event_handler)
+            if runtime.status == "failed" and stage_runtime.stage.abort_on_failure:
+                stage_runtime.status = "failed"
+                for pending in stage_runtime.jobs[index + 1 :]:
+                    if pending.status == "waiting":
+                        pending.status = "skipped"
+                self._emit_run_updated(context, event_handler)
+                return
+        if not stop_event.is_set():
+            stage_runtime.status = (
+                "failed"
+                if any(job_runtime.status == "failed" for job_runtime in stage_runtime.jobs)
+                else "success"
+            )
+            self._emit_run_updated(context, event_handler)
+
+    def _run_batch(
+        self,
+        context: TaskRunContext,
+        stage_runtime: StageRuntime,
+        runtimes: list[JobRuntime],
+        stop_event: threading.Event,
+        event_handler: RuntimeEventHandler | None,
+    ) -> None:
+        if not runtimes:
+            stage_runtime.status = "success"
+            self._emit_run_updated(context, event_handler)
+            return
+
+        for runtime in runtimes:
+            self._start_job(context, stage_runtime, runtime, event_handler)
+
+        try:
+            while True:
+                running_count = 0
+                for runtime in runtimes:
+                    if runtime.status != "running" or not runtime.process:
+                        continue
+
+                    if stop_event.is_set():
+                        break
+
+                    code = runtime.process.poll()
+                    if code is None:
+                        running_count += 1
+                        continue
+
+                    runtime.exit_code = code
+                    runtime.finished_at = time.time()
+                    runtime.status = "success" if code == 0 else "failed"
+
+                if stop_event.is_set():
+                    self._terminate_running_jobs([stage_runtime])
+                    stage_runtime.status = "stopped"
+                    self._emit_run_updated(context, event_handler)
+                    break
+
+                if running_count == 0:
+                    break
+                self._emit_run_updated(context, event_handler)
+                time.sleep(self.refresh_seconds)
+        finally:
+            for runtime in runtimes:
+                if runtime.reader_thread:
+                    runtime.reader_thread.join(timeout=2)
+                if runtime.log_fp:
+                    runtime.log_fp.close()
+                    runtime.log_fp = None
+
+        if stage_runtime.status != "stopped":
+            stage_runtime.status = (
+                "failed"
+                if stage_runtime.stage.concurrent
+                and any(runtime.status == "failed" for runtime in stage_runtime.jobs)
+                else ("success" if stage_runtime.stage.concurrent else "running")
+            )
+        self._emit_run_updated(context, event_handler)
+
+    def _start_job(
+        self,
+        context: TaskRunContext,
+        stage_runtime: StageRuntime,
+        runtime: JobRuntime,
+        event_handler: RuntimeEventHandler | None,
+    ) -> None:
+        runtime.status = "running"
+        runtime.started_at = time.time()
+        runtime.log_path.parent.mkdir(parents=True, exist_ok=True)
+        runtime.log_fp = runtime.log_path.open("w", encoding="utf-8", newline="")
+
+        process = subprocess.Popen(
+            runtime.job.command,
+            cwd=str(runtime.job.cwd),
+            env={**os.environ, **runtime.job.env},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+
+        runtime.process = process
+        runtime.reader_thread = threading.Thread(
+            target=self._consume_output,
+            args=(context, stage_runtime, runtime, event_handler),
+            daemon=True,
+        )
+        runtime.reader_thread.start()
+        self._emit_run_updated(context, event_handler)
+
+    def _consume_output(
+        self,
+        context: TaskRunContext,
+        stage_runtime: StageRuntime,
+        runtime: JobRuntime,
+        event_handler: RuntimeEventHandler | None,
+    ) -> None:
+        assert runtime.process is not None
+        assert runtime.log_fp is not None
+
+        stream = runtime.process.stdout
+        if stream is None:
+            return
+
+        for raw_line in stream:
+            runtime.log_fp.write(raw_line)
+            runtime.log_fp.flush()
+            with self._lock:
+                runtime.line_count += 1
+                cleaned = raw_line.rstrip().replace("\r", "")
+                if cleaned:
+                    runtime.last_line = cleaned[-120:]
+                    self._append_log_entry(
+                        context,
+                        stage_runtime=stage_runtime,
+                        runtime=runtime,
+                        message=cleaned,
+                        level=self._parse_log_level(cleaned),
+                        event_handler=event_handler,
+                    )
+
+    def _append_log_entry(
+        self,
+        context: TaskRunContext,
+        *,
+        stage_runtime: StageRuntime,
+        runtime: JobRuntime,
+        message: str,
+        level: str,
+        event_handler: RuntimeEventHandler | None,
+    ) -> None:
+        entry = {
+            "id": context.next_log_id,
+            "timestamp": datetime.now().isoformat(),
+            "level": level,
+            "message": message,
+            "stage_key": stage_runtime.stage.key,
+            "stage_name": stage_runtime.stage.name,
+            "job_key": runtime.job.key,
+            "job_name": runtime.job.name,
+        }
+        context.next_log_id += 1
+        context.log_entries.append(entry)
+        with context.log_stream_path.open("a", encoding="utf-8") as log_stream:
+            log_stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        if event_handler:
+            event_handler({"type": "log", "run_id": context.run_id, "entry": entry})
+
+    def _emit_run_updated(
+        self,
+        context: TaskRunContext,
+        event_handler: RuntimeEventHandler | None,
+    ) -> None:
+        if event_handler:
+            event_handler({"type": "run_updated", "run": serialize_run_context(context)})
+
+    def _terminate_running_jobs(self, stage_runtimes: list[StageRuntime]) -> None:
+        jobs = [job for stage in stage_runtimes for job in stage.jobs]
+        for runtime in jobs:
+            process = runtime.process
+            if runtime.status != "running" or process is None:
+                continue
+            process.terminate()
+
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            alive = [
+                runtime.process
+                for runtime in jobs
+                if runtime.status == "running" and runtime.process and runtime.process.poll() is None
+            ]
+            if not alive:
+                break
+            time.sleep(0.2)
+
+        for runtime in jobs:
+            process = runtime.process
+            if runtime.status != "running" or process is None:
+                continue
+            if process.poll() is None:
+                process.kill()
+            runtime.status = "stopped"
+            runtime.exit_code = -1
+            runtime.finished_at = time.time()
+
+    @staticmethod
+    def _parse_log_level(line: str) -> str:
+        line_upper = line.upper()
+        if "ERROR" in line_upper or "FAILED" in line_upper:
+            return "error"
+        if "WARNING" in line_upper or "WARN" in line_upper:
+            return "warning"
+        if "SUCCESS" in line_upper or "完成" in line or "成功" in line:
+            return "success"
+        if "DEBUG" in line_upper:
+            return "debug"
+        return "info"

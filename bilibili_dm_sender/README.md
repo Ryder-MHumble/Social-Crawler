@@ -144,7 +144,7 @@ hihi浣犲ソ鍛€锛屾姳姝夋墦鎵板暒锛屾垜鏄寳浜腑鍏虫�
 ### 妫€鏌ュ彂閫佺姸鎬?
 
 ```bash
-python3 check_dm_status.py
+python3 ../scripts/verification/bilibili_dm/check_dm_status.py
 ```
 
 浠庢祻瑙堝櫒浼氳瘽涓粺璁′粖澶╁彂閫佺殑绉佷俊鏁伴噺銆?

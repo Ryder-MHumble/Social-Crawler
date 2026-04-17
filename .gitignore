@@ -165,10 +165,14 @@ cython_debug/
 /temp_image/
 /browser_data/
 /data/
+/runtime/
+/archive/
 
 */.DS_Store
 .vscode
 /node_modules
+**/node_modules/
+frontend/**/.vite/
 docs/.vitepress/cache
 
 # other gitignore
@@ -177,6 +181,10 @@ docs/.vitepress/cache
 
 agent_zone
 debug_tools
+.task_center/
+tmp_*.pid
+tmp_*.out.log
+tmp_*.err.log
 
 database/*.db
 

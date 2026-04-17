@@ -42,6 +42,7 @@ class ExpiringLocalCache(AbstractCache):
         self._cron_interval = cron_interval
         self._cache_container: Dict[str, Tuple[Any, float]] = {}
         self._cron_task: Optional[asyncio.Task] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         # Start scheduled cleanup task
         self._schedule_clear()
 
@@ -50,8 +51,13 @@ class ExpiringLocalCache(AbstractCache):
         Destructor function, cleanup scheduled task
         :return:
         """
+        self.close()
+
+    def close(self) -> None:
+        """Cancel the cron task when the cache is disposed."""
         if self._cron_task is not None:
             self._cron_task.cancel()
+            self._cron_task = None
 
     def get(self, key: str) -> Optional[Any]:
         """
@@ -100,13 +106,12 @@ class ExpiringLocalCache(AbstractCache):
         Start scheduled cleanup task
         :return:
         """
-
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
         except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+            return
 
+        self._loop = loop
         self._cron_task = loop.create_task(self._start_clear_cron())
 
     def _clear(self):
@@ -114,7 +119,7 @@ class ExpiringLocalCache(AbstractCache):
         Clean up cache based on expiration time
         :return:
         """
-        for key, (value, expire_time) in self._cache_container.items():
+        for key, (value, expire_time) in list(self._cache_container.items()):
             if expire_time < time.time():
                 del self._cache_container[key]
 

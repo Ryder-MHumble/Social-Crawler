@@ -37,7 +37,6 @@ from database.models import DouyinAweme, DouyinAwemeComment, DyCreator
 from tools import utils, words
 from tools.async_file_writer import AsyncFileWriter
 from var import crawler_type_var
-from database.mongodb_store_base import MongoDBStoreBase
 
 
 class DouyinCsvStoreImplement(AbstractStore):
@@ -212,6 +211,8 @@ class DouyinMongoStoreImplement(AbstractStore):
     """Douyin MongoDB storage implementation"""
 
     def __init__(self):
+        from database.mongodb_store_base import MongoDBStoreBase
+
         self.mongo_store = MongoDBStoreBase(collection_prefix="douyin")
 
     async def store_content(self, content_item: Dict):

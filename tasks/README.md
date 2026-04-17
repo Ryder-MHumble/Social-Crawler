@@ -48,5 +48,4 @@ run_crawl.cmd vibe_coding
   - live progress dashboard
   - unified final result summary
 - Logs are written to:
-  - `logs/task_runs/<timestamp>_<task>/`
-
+  - `runtime/logs/task_runs/<timestamp>_<task>/`

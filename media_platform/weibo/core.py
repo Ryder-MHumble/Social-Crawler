@@ -40,7 +40,7 @@ import config
 from base.base_crawler import AbstractCrawler
 from proxy.proxy_ip_pool import IpInfoModel, create_ip_pool
 from store import weibo as weibo_store
-from tools import utils
+from tools import runtime_paths, utils
 from tools.cdp_browser import CDPBrowserManager
 from var import crawler_type_var, source_keyword_var
 
@@ -89,7 +89,9 @@ class WeiboCrawler(AbstractCrawler):
                 self.browser_context = await self.launch_browser(chromium, None, self.mobile_user_agent, headless=config.HEADLESS)
 
                 # stealth.min.js is a js script to prevent the website from detecting the crawler.
-                await self.browser_context.add_init_script(path="libs/stealth.min.js")
+                await self.browser_context.add_init_script(
+                    path=str(runtime_paths.get_repo_path("libs", "stealth.min.js"))
+                )
 
 
             self.context_page = await self.browser_context.new_page()
@@ -364,7 +366,10 @@ class WeiboCrawler(AbstractCrawler):
         """Launch browser and create browser context"""
         utils.logger.info("[WeiboCrawler.launch_browser] Begin create browser context ...")
         if config.SAVE_LOGIN_STATE:
-            user_data_dir = os.path.join(os.getcwd(), "browser_data", config.USER_DATA_DIR % config.PLATFORM)  # type: ignore
+            runtime_paths.ensure_runtime_layout()
+            user_data_dir = str(
+                runtime_paths.get_browser_user_data_dir(config.PLATFORM, config.USER_DATA_DIR)
+            )
             browser_context = await chromium.launch_persistent_context(
                 user_data_dir=user_data_dir,
                 accept_downloads=True,
