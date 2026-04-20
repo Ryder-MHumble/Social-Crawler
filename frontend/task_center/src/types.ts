@@ -46,6 +46,20 @@ export interface TaskTemplate {
   fields: TaskFieldSchema[];
 }
 
+export interface BrowsermintSession {
+  session_id: string;
+  name: string;
+  status: string;
+  last_active_at: string | null;
+  deep_link_url: string;
+  expires_at: string | null;
+}
+
+export interface BrowsermintSessionsPayload {
+  configured: boolean;
+  sessions: BrowsermintSession[];
+}
+
 export interface TaskPreset {
   id: string;
   task_slug: string;
@@ -80,6 +94,7 @@ export interface TaskStage {
   key: string;
   name: string;
   concurrent: boolean;
+  max_parallel?: number | null;
   abort_on_failure: boolean;
   status?: string;
   jobs: TaskJob[];

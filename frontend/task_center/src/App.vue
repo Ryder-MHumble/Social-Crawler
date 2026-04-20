@@ -4,6 +4,7 @@ import {
   activeRunSocketUrl,
   createPreset,
   deletePreset,
+  fetchBrowsermintSessions,
   fetchActiveRun,
   fetchDataFilePreview,
   fetchDataFiles,
@@ -31,6 +32,7 @@ import SystemTab from "./components/SystemTab.vue";
 import TopActionBar from "./components/TopActionBar.vue";
 import WorkspaceSidebar from "./components/WorkspaceSidebar.vue";
 import type {
+  BrowsermintSession,
   DataBrowseMode,
   DataFileFilters,
   DataFileInfo,
@@ -50,14 +52,13 @@ import type {
   TaskTemplate,
 } from "./types";
 
-type MainTab = "config" | "commands" | "execution" | "data" | "system";
+type MainTab = "config" | "commands" | "execution" | "data";
 
 const mainTabs: Array<{ key: MainTab; label: string }> = [
-  { key: "config", label: "配置" },
+  { key: "config", label: "配置与预览" },
   { key: "commands", label: "命令" },
-  { key: "execution", label: "执行" },
-  { key: "data", label: "数据" },
-  { key: "system", label: "系统" },
+  { key: "execution", label: "运行监控" },
+  { key: "data", label: "结果中心" },
 ];
 
 const tasks = ref<TaskTemplate[]>([]);
@@ -66,6 +67,8 @@ const runs = ref<TaskRun[]>([]);
 const activeRun = ref<TaskRun | null>(null);
 const logs = ref<TaskLogEntry[]>([]);
 const preview = ref<TaskPreview | null>(null);
+const browsermintSessions = ref<BrowsermintSession[]>([]);
+const browsermintConfigured = ref(false);
 
 const sqliteStatus = ref<SqliteStatus | null>(null);
 const sqliteTables = ref<SqliteTableSummary[]>([]);
@@ -89,11 +92,13 @@ const selectedConfigGroup = ref("");
 const selectedRunId = ref<string | null>(null);
 const selectedExecutionJobRef = ref<string | null>(null);
 const socketState = ref<"connecting" | "connected" | "disconnected">("connecting");
+const isSystemPanelOpen = ref(false);
 
 const isLoading = ref(true);
 const isPreviewLoading = ref(false);
 const isSavingPreset = ref(false);
 const isStartingRun = ref(false);
+const isBrowsermintLoading = ref(false);
 const isSystemLoading = ref(false);
 const isDataLoading = ref(false);
 const isFileLoading = ref(false);
@@ -131,6 +136,83 @@ const selectedTask = computed(
   () => tasks.value.find((task) => task.slug === selectedTaskSlug.value) ?? null,
 );
 
+const selectedBrowsermintSession = computed(
+  () =>
+    browsermintSessions.value.find(
+      (session) => session.session_id === String(formParams.value.browser_session_id ?? "").trim(),
+    ) ?? null,
+);
+
+const activeRunBrowsermintSession = computed(() => {
+  const activeSessionId = String(activeRun.value?.normalized_params?.browser_session_id ?? "").trim();
+  if (!activeSessionId) return null;
+  return browsermintSessions.value.find((session) => session.session_id === activeSessionId) ?? null;
+});
+
+type RunGuide = {
+  title: string;
+  detail: string;
+  openBrowsermint: boolean;
+  openLabel: string;
+};
+
+const runStartGuide = computed<RunGuide | null>(() => {
+  if (isStartingRun.value) {
+    return {
+      title: "正在启动任务并检查浏览器连接…",
+      detail: "请稍候几秒，系统会完成会话预检后进入执行。",
+      openBrowsermint: false,
+      openLabel: "",
+    };
+  }
+
+  const run = activeRun.value;
+  if (!run || run.status !== "running") return null;
+
+  const browserProvider = String(run.normalized_params.browser_provider ?? "local")
+    .trim()
+    .toLowerCase();
+  const loginType = String(run.normalized_params.login_type ?? "")
+    .trim()
+    .toLowerCase();
+
+  if (browserProvider === "browsermint" && loginType === "qrcode") {
+    return {
+      title: "任务已启动，请先在 Browsermint 会话完成扫码/登录确认。",
+      detail: "扫码完成后回到“执行”页查看实时日志；未登录会导致平台接口无权限。",
+      openBrowsermint: Boolean(guideBrowsermintDeepLink.value),
+      openLabel: "打开 Browsermint 去扫码",
+    };
+  }
+
+  if (browserProvider === "browsermint") {
+    return {
+      title: "任务已启动，正在借用 Browsermint 会话执行。",
+      detail: "可在“执行”页查看连接状态和实时日志输出。",
+      openBrowsermint: Boolean(guideBrowsermintDeepLink.value),
+      openLabel: "打开 Browsermint 会话",
+    };
+  }
+
+  if (loginType === "qrcode") {
+    return {
+      title: "任务已启动，请在本地浏览器完成扫码登录。",
+      detail: "登录完成后返回“执行”页观察日志与采集进度。",
+      openBrowsermint: false,
+      openLabel: "",
+    };
+  }
+
+  return null;
+});
+
+const guideBrowsermintDeepLink = computed(() => {
+  const fromActiveRun = String(activeRunBrowsermintSession.value?.deep_link_url ?? "").trim();
+  if (fromActiveRun) return fromActiveRun;
+  const fromFormSelection = String(selectedBrowsermintSession.value?.deep_link_url ?? "").trim();
+  return fromFormSelection;
+});
+
 const selectedTaskPresets = computed(() =>
   presets.value.filter((preset) => preset.task_slug === selectedTaskSlug.value),
 );
@@ -139,8 +221,49 @@ const selectedPreset = computed(
   () => selectedTaskPresets.value.find((preset) => preset.id === selectedPresetId.value) ?? null,
 );
 
+function enrichFieldOptions(field: TaskTemplate["fields"][number]): TaskTemplate["fields"][number] {
+  if (field.key !== "browser_session_id") return field;
+  const currentValue = String(formParams.value.browser_session_id ?? "").trim();
+  const options = browsermintSessions.value.map((session) => ({
+    value: session.session_id,
+    label: `${session.name} · ${session.status}`,
+    description: session.last_active_at ? `Last active: ${session.last_active_at}` : "",
+  }));
+  if (currentValue && !options.some((option) => String(option.value) === currentValue)) {
+    options.unshift({
+      value: currentValue,
+      label: `${currentValue} · 当前值`,
+      description: "当前值不在可选列表中，可能已停止或被删除。",
+    });
+  }
+  if (!options.length) {
+    options.push({
+      value: "",
+      label: browsermintConfigured.value ? "暂无可用会话" : "Browsermint 未配置",
+      description: browsermintConfigured.value
+        ? "请先在 Browsermint 中启动并登录会话。"
+        : "请先配置 Browsermint 后端集成。",
+    });
+  }
+  const helperTextParts = [field.helper_text];
+  if (!browsermintConfigured.value) {
+    helperTextParts.push("当前环境未配置 Browsermint 集成。");
+  } else if (isBrowsermintLoading.value) {
+    helperTextParts.push("正在刷新 Browsermint 会话列表。");
+  } else if (!browsermintSessions.value.length) {
+    helperTextParts.push("暂无 running/paused 会话，请先到 Browsermint 完成扫码登录。");
+  }
+  return {
+    ...field,
+    options,
+    helper_text: helperTextParts.filter(Boolean).join(" "),
+  };
+}
+
 const visibleFields = computed(() =>
-  (selectedTask.value?.fields ?? []).filter((field) => isFieldVisible(field)),
+  (selectedTask.value?.fields ?? [])
+    .map((field) => enrichFieldOptions(field))
+    .filter((field) => isFieldVisible(field)),
 );
 
 const groupedFields = computed<GroupedFieldSection[]>(() => {
@@ -164,15 +287,46 @@ function findRun(runId: string | null): TaskRun | null {
   return runs.value.find((run) => run.id === runId) ?? null;
 }
 
-const selectedRun = computed(() => findRun(selectedRunId.value));
+const selectedTaskRun = computed(() => {
+  const run = findRun(selectedRunId.value);
+  if (!run || run.task_slug !== selectedTaskSlug.value) return null;
+  return run;
+});
+
+const taskActiveRun = computed(() => {
+  const run = activeRun.value;
+  if (!run || run.task_slug !== selectedTaskSlug.value) return null;
+  return run;
+});
+
+const otherTaskActiveRun = computed(() => {
+  const run = activeRun.value;
+  if (!run || run.task_slug === selectedTaskSlug.value) return null;
+  return run;
+});
+
+const taskRuns = computed(() => {
+  const merged: TaskRun[] = [];
+  const seen = new Set<string>();
+  const pushRun = (run: TaskRun | null | undefined) => {
+    if (!run || run.task_slug !== selectedTaskSlug.value || seen.has(run.id)) return;
+    seen.add(run.id);
+    merged.push(run);
+  };
+  pushRun(taskActiveRun.value);
+  runs.value.forEach(pushRun);
+  return merged;
+});
+
+const selectedRun = computed(() => selectedTaskRun.value);
 
 const displayedRun = computed(() => {
-  return selectedRun.value ?? activeRun.value ?? runs.value[0] ?? null;
+  return selectedRun.value ?? taskRuns.value[0] ?? null;
 });
 
 const recentRuns = computed(() =>
-  runs.value
-    .filter((run) => run.id !== activeRun.value?.id)
+  taskRuns.value
+    .filter((run) => run.id !== taskActiveRun.value?.id)
     .slice(0, 8),
 );
 
@@ -180,11 +334,23 @@ const currentPresetName = computed(
   () => selectedPreset.value?.name || presetName.value || "任务默认值",
 );
 
-const storageSummary = computed(() => {
-  if (selectedTaskSlug.value === "creator_outreach") {
+const storageSummary = computed(() =>
+  buildStorageSummary(selectedTaskSlug.value, formParams.value),
+);
+
+const runSelectOptions = computed(() => [
+  { value: "", label: "当前任务暂无运行记录" },
+  ...taskRuns.value.map((run) => ({
+    value: run.id,
+    label: `${run.title} · ${run.status}`,
+  })),
+]);
+
+function buildStorageSummary(taskSlug: string, params?: Record<string, unknown> | null): string {
+  if (taskSlug === "creator_outreach") {
     return "SQLite · candidate / delivery tables";
   }
-  const saveOption = resolveSaveOption(formParams.value);
+  const saveOption = resolveSaveOption(params);
   if (saveOption === "sqlite") return "SQLite · crawl tables + observations";
   if (saveOption === "json") return "JSON 文件 · runtime/data";
   if (saveOption === "csv") return "CSV 文件 · runtime/data";
@@ -192,7 +358,7 @@ const storageSummary = computed(() => {
   if (saveOption === "supabase") return "Supabase · remote dataset";
   if (!saveOption) return "默认输出 · 任务定义决定";
   return `${saveOption.toUpperCase()} · 任务存储`;
-});
+}
 
 const baselineParams = computed<Record<string, unknown>>(() =>
   cloneParams(selectedPreset.value?.params ?? selectedTask.value?.defaults ?? {}),
@@ -250,7 +416,43 @@ function firstJobRef(run: TaskRun | null): string | null {
   return stage && job ? `${stage.key}::${job.key}` : null;
 }
 
+function formatDateTime(value?: string | null): string {
+  if (!value) return "未记录";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function normalizeRunStatus(status?: string | null): string {
+  return String(status ?? "")
+    .trim()
+    .toLowerCase();
+}
+
+function runStatusTone(status?: string | null): "running" | "danger" | "success" | "warning" | "neutral" {
+  const normalized = normalizeRunStatus(status);
+  if (["running", "queued", "pending", "starting", "active", "in_progress"].includes(normalized)) {
+    return "running";
+  }
+  if (["failed", "error", "errored", "timeout", "cancelled", "canceled", "aborted", "stopped"].includes(normalized)) {
+    return "danger";
+  }
+  if (["completed", "complete", "success", "succeeded", "done", "finished"].includes(normalized)) {
+    return "success";
+  }
+  if (normalized) return "warning";
+  return "neutral";
+}
+
 function resolveSaveOption(params?: Record<string, unknown> | null): string {
+  if (String(params?.browser_provider ?? "").trim().toLowerCase() === "browsermint") {
+    return "sqlite";
+  }
   return String(params?.save_option ?? params?.save_data_option ?? "")
     .trim()
     .toLowerCase();
@@ -283,6 +485,31 @@ function preferredDataTable(taskSlug?: string | null): string {
   if (taskSlug === "creator_outreach") return "outreach_candidates";
   if (taskSlug === "vibe_coding") return "vibe_content_scores";
   return "crawl_observations";
+}
+
+function applyTaskDataDefaults(taskSlug: string) {
+  const saveOption = resolveSaveOption(formParams.value);
+  selectedDataMode.value = preferredDataMode(taskSlug, saveOption);
+  dataFilters.value = {
+    ...dataFilters.value,
+    table: preferredDataTable(taskSlug),
+    run_id: "",
+    task_slug: "",
+    platform: "",
+    entity_type: "",
+    clean_status: "",
+    q: "",
+    offset: 0,
+  };
+  dataFileFilters.value = {
+    ...dataFileFilters.value,
+    platform: "",
+    file_type: preferredFileType(saveOption),
+    q: "",
+  };
+  selectedDataRow.value = null;
+  selectedDataFilePath.value = null;
+  selectedDataFilePreview.value = null;
 }
 
 function ensureSelectedConfigGroup() {
@@ -339,12 +566,15 @@ async function initialize() {
       applyPreset(preset);
     }
 
-    selectedRunId.value = loadedActiveRun?.id ?? loadedRuns[0]?.id ?? null;
-    const initialRun = loadedActiveRun ?? loadedRuns[0] ?? null;
+    const initialRun =
+      [loadedActiveRun, ...loadedRuns].find(
+        (run): run is TaskRun => run !== null && run.task_slug === initialTaskSlug,
+      ) ?? null;
+    selectedRunId.value = initialRun?.id ?? null;
     if (initialRun) {
       applyRunDataContext(initialRun);
     } else {
-      selectedDataMode.value = preferredDataMode(initialTaskSlug, resolveSaveOption(formParams.value));
+      applyTaskDataDefaults(initialTaskSlug);
     }
     if (selectedRunId.value) {
       logs.value = await fetchRunLogs(selectedRunId.value, 1000);
@@ -355,6 +585,22 @@ async function initialize() {
     errorMessage.value = (error as Error).message;
   } finally {
     isLoading.value = false;
+  }
+}
+
+async function loadBrowsermintSessions(force = false) {
+  if (!force && isBrowsermintLoading.value) return;
+  isBrowsermintLoading.value = true;
+  try {
+    const payload = await fetchBrowsermintSessions();
+    browsermintConfigured.value = payload.configured;
+    browsermintSessions.value = payload.sessions;
+  } catch (error) {
+    browsermintConfigured.value = false;
+    browsermintSessions.value = [];
+    errorMessage.value = (error as Error).message;
+  } finally {
+    isBrowsermintLoading.value = false;
   }
 }
 
@@ -513,8 +759,11 @@ function connectSocket() {
     if (payload.type === "run_updated" && payload.run) {
       const nextRun = payload.run as TaskRun;
       activeRun.value = nextRun;
-      if (!selectedRunId.value) {
+      if (!selectedRunId.value && nextRun.task_slug === selectedTaskSlug.value) {
         selectedRunId.value = nextRun.id;
+        applyRunDataContext(nextRun);
+      } else if (selectedRunId.value === nextRun.id && nextRun.task_slug === selectedTaskSlug.value) {
+        applyRunDataContext(nextRun);
       }
       if (nextRun.status !== "running") {
         await refreshRunsList();
@@ -539,17 +788,37 @@ function connectSocket() {
 
 function handleSelectTask(taskSlug: string) {
   selectedTaskSlug.value = taskSlug;
+  selectedMainTab.value = "config";
   resetMessages();
   const preset =
     presets.value.filter((item) => item.task_slug === taskSlug).find((item) => item.is_default) ??
     presets.value.filter((item) => item.task_slug === taskSlug)[0] ??
     null;
   applyPreset(preset);
+  const scopedRun =
+    [activeRun.value, ...runs.value].find(
+      (run): run is TaskRun => run !== null && run.task_slug === taskSlug,
+    ) ?? null;
+  selectedRunId.value = scopedRun?.id ?? null;
+  selectedExecutionJobRef.value = firstJobRef(scopedRun);
+  if (scopedRun) {
+    applyRunDataContext(scopedRun);
+    return;
+  }
+  applyTaskDataDefaults(taskSlug);
 }
 
 function handleSelectPreset(presetId: string | null) {
   const preset = selectedTaskPresets.value.find((item) => item.id === presetId) ?? null;
   applyPreset(preset);
+}
+
+function isBrowsermintQrcode(
+  params: Record<string, unknown> | TaskRun["normalized_params"] | null | undefined,
+): boolean {
+  const browserProvider = String(params?.browser_provider ?? "local").trim().toLowerCase();
+  const loginType = String(params?.login_type ?? "").trim().toLowerCase();
+  return browserProvider === "browsermint" && loginType === "qrcode";
 }
 
 async function handleCreatePreset() {
@@ -613,6 +882,13 @@ async function handleDeletePreset() {
 
 async function handleStartRun() {
   if (!selectedTask.value) return;
+  const needsBrowsermintQrcodeGuide = isBrowsermintQrcode(formParams.value);
+  const deepLink = guideBrowsermintDeepLink.value;
+  const popup =
+    needsBrowsermintQrcodeGuide && deepLink
+      ? window.open(deepLink, "_blank", "noopener")
+      : null;
+
   isStartingRun.value = true;
   resetMessages();
   try {
@@ -626,13 +902,36 @@ async function handleStartRun() {
     selectedExecutionJobRef.value = firstJobRef(run);
     logs.value = [];
     await refreshRunsList();
-    message.value = "任务已启动";
+    if (isBrowsermintQrcode(run.normalized_params)) {
+      message.value = "任务已启动，请在 Browsermint 会话完成扫码后返回执行页查看日志。";
+      if (!popup && deepLink) {
+        window.open(deepLink, "_blank", "noopener");
+      }
+    } else {
+      message.value = "任务已启动";
+      if (popup && !popup.closed) {
+        popup.close();
+      }
+    }
     selectedMainTab.value = "execution";
   } catch (error) {
+    if (popup && !popup.closed) {
+      popup.close();
+    }
     errorMessage.value = (error as Error).message;
   } finally {
     isStartingRun.value = false;
   }
+}
+
+function handleOpenBrowsermint() {
+  if (!selectedBrowsermintSession.value?.deep_link_url) return;
+  window.open(selectedBrowsermintSession.value.deep_link_url, "_blank", "noopener");
+}
+
+function handleOpenGuideBrowsermint() {
+  if (!guideBrowsermintDeepLink.value) return;
+  window.open(guideBrowsermintDeepLink.value, "_blank", "noopener");
 }
 
 async function handleStopRun() {
@@ -696,26 +995,20 @@ function applyRunDataContext(run: TaskRun) {
 }
 
 function clearRunDataContext() {
-  dataFilters.value = {
-    ...dataFilters.value,
-    run_id: "",
-    task_slug: "",
-    platform: "",
-    entity_type: "",
-    clean_status: "",
-    q: "",
-    offset: 0,
-  };
-  selectedDataRow.value = null;
+  applyTaskDataDefaults(selectedTaskSlug.value);
 }
 
 function handleSelectRun(runId: string) {
   const run = findRun(runId);
-  selectedRunId.value = runId;
+  if (!run || run.task_slug !== selectedTaskSlug.value) return;
+  selectedRunId.value = run.id;
   selectedExecutionJobRef.value = firstJobRef(run);
-  if (!run) return;
   applyRunDataContext(run);
-  selectedMainTab.value = run.status === "running" ? "execution" : "data";
+}
+
+function handleRunSwitch(runId: string) {
+  if (!runId) return;
+  handleSelectRun(runId);
 }
 
 function updateField(key: string, value: unknown) {
@@ -768,6 +1061,33 @@ watch(
 );
 
 watch(
+  () => [selectedTaskSlug.value, String(formParams.value.browser_provider ?? "")],
+  ([taskSlug, provider]) => {
+    const task = tasks.value.find((item) => item.slug === taskSlug);
+    const supportsBrowsermint = Boolean(task?.fields.some((field) => field.key === "browser_provider"));
+    if (supportsBrowsermint && provider === "browsermint") {
+      void loadBrowsermintSessions(true);
+    }
+  },
+  { immediate: false },
+);
+
+watch(
+  () => [activeRun.value?.id, String(activeRun.value?.normalized_params?.browser_provider ?? "")],
+  ([, providerRaw]) => {
+    const provider = String(providerRaw ?? "").trim().toLowerCase();
+    if (
+      provider === "browsermint"
+      && !browsermintSessions.value.length
+      && !isBrowsermintLoading.value
+    ) {
+      void loadBrowsermintSessions(true);
+    }
+  },
+  { immediate: true },
+);
+
+watch(
   displayedRun,
   async (run) => {
     selectedExecutionJobRef.value = firstJobRef(run);
@@ -790,7 +1110,14 @@ watch(
         scheduleFileLoad();
       }
     }
-    if (tab === "system") {
+  },
+  { immediate: false },
+);
+
+watch(
+  isSystemPanelOpen,
+  (open) => {
+    if (open) {
       void refreshSystem();
     }
   },
@@ -861,7 +1188,7 @@ onBeforeUnmount(() => {
       :selected-task-slug="selectedTaskSlug"
       :current-preset-name="currentPresetName"
       :recent-runs="recentRuns"
-      :active-run="activeRun"
+      :active-run="taskActiveRun"
       :selected-run-id="selectedRunId"
       :socket-state="socketState"
       :sqlite-ready="Boolean(sqliteStatus?.initialized)"
@@ -876,7 +1203,7 @@ onBeforeUnmount(() => {
         :preset-name="presetName"
         :preset-is-default="presetIsDefault"
         :has-unsaved-changes="hasUnsavedChanges"
-        :active-run="activeRun"
+        :active-run="taskActiveRun"
         :sqlite-status="sqliteStatus"
         :is-saving-preset="isSavingPreset"
         :is-starting-run="isStartingRun"
@@ -890,103 +1217,197 @@ onBeforeUnmount(() => {
         @stop-run="handleStopRun"
       />
 
-      <section class="workspace-header">
-        <div>
-          <p class="workspace-kicker">{{ selectedTask?.slug || "task-center" }}</p>
-          <h2>{{ selectedTask?.title || "任务工作台" }}</h2>
-          <p>{{ selectedTask?.description || "把任务、命令、执行和数据集中到一个控制台里。" }}</p>
+      <section v-if="otherTaskActiveRun || runStartGuide || message || errorMessage" class="workspace-messages">
+        <div v-if="otherTaskActiveRun" class="message-banner warning">
+          当前全局活跃任务为 {{ otherTaskActiveRun.title }}，你正在浏览 {{ selectedTask?.title || "当前任务" }} 的配置与历史运行。
         </div>
-        <div class="workspace-capabilities">
-          <span v-for="capability in selectedTask?.capabilities ?? []" :key="capability">
-            {{ capability }}
-          </span>
+        <div v-if="runStartGuide" class="message-banner info guide-banner">
+          <div class="guide-copy">
+            <strong>{{ runStartGuide.title }}</strong>
+            <span>{{ runStartGuide.detail }}</span>
+          </div>
+          <div class="guide-actions">
+            <button
+              v-if="runStartGuide.openBrowsermint"
+              type="button"
+              class="btn secondary small"
+              @click="handleOpenGuideBrowsermint"
+            >
+              {{ runStartGuide.openLabel }}
+            </button>
+            <button
+              v-if="taskActiveRun?.status === 'running' && selectedMainTab !== 'execution'"
+              type="button"
+              class="btn ghost small"
+              @click="selectedMainTab = 'execution'"
+            >
+              查看运行监控
+            </button>
+          </div>
         </div>
-      </section>
-
-      <section v-if="message || errorMessage" class="workspace-messages">
         <div v-if="message" class="message-banner success">{{ message }}</div>
         <div v-if="errorMessage" class="message-banner error">{{ errorMessage }}</div>
       </section>
 
-      <nav class="main-tabs">
-        <button
-          v-for="tab in mainTabs"
-          :key="tab.key"
-          class="main-tab"
-          :class="{ active: selectedMainTab === tab.key }"
-          @click="selectedMainTab = tab.key"
-        >
-          {{ tab.label }}
+      <section class="tab-strip">
+        <nav class="main-tabs">
+          <button
+            v-for="tab in mainTabs"
+            :key="tab.key"
+            class="main-tab"
+            :class="{ active: selectedMainTab === tab.key }"
+            @click="selectedMainTab = tab.key"
+          >
+            {{ tab.label }}
+          </button>
+        </nav>
+
+        <button type="button" class="btn ghost tab-strip-button" @click="isSystemPanelOpen = true">
+          系统工具
         </button>
-      </nav>
+      </section>
 
       <section v-if="isLoading" class="loading-screen">任务中心加载中…</section>
 
-      <ConfigTab
-        v-else-if="selectedMainTab === 'config'"
-        :groups="groupedFields"
-        :selected-group="selectedConfigGroup"
-        :form-params="formParams"
-        :preview-loading="isPreviewLoading"
-        @select-group="selectedConfigGroup = $event"
-        @update-field="updateField"
-      />
+      <template v-else>
+        <section
+          v-if="selectedMainTab === 'execution' || selectedMainTab === 'data'"
+          class="run-context-bar"
+          :class="{ empty: !displayedRun }"
+        >
+          <div v-if="displayedRun" class="run-context-copy">
+            <p class="workspace-kicker">Run Context</p>
+            <h3>{{ displayedRun.title }}</h3>
+            <p>{{ displayedRun.id }} · {{ formatDateTime(displayedRun.started_at) }}</p>
+          </div>
+          <div v-if="displayedRun" class="run-context-metrics">
+            <div class="run-context-metric">
+              <span>状态</span>
+              <strong class="metric-chip" :class="runStatusTone(displayedRun.status)">{{ displayedRun.status }}</strong>
+            </div>
+            <div class="run-context-metric">
+              <span>Accepted</span>
+              <strong>{{ displayedRun.metrics.accepted }}</strong>
+            </div>
+            <div class="run-context-metric">
+              <span>Filtered</span>
+              <strong>{{ displayedRun.metrics.filtered }}</strong>
+            </div>
+            <div class="run-context-metric">
+              <span>Deduped</span>
+              <strong>{{ displayedRun.metrics.deduped }}</strong>
+            </div>
+          </div>
+          <div v-if="displayedRun" class="run-context-actions">
+            <div class="run-switch-field">
+              <span>当前 run</span>
+              <select
+                :value="displayedRun.id"
+                :disabled="!taskRuns.length"
+                @change="handleRunSwitch(($event.target as HTMLSelectElement).value)"
+              >
+                <option v-for="option in runSelectOptions" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </div>
+          </div>
+          <div v-else class="empty-state compact">当前任务还没有可用的运行记录。</div>
+        </section>
 
-      <CommandsTab
-        v-else-if="selectedMainTab === 'commands'"
-        :preview="preview"
-        :sqlite-status="sqliteStatus"
-        :storage-summary="storageSummary"
-      />
+        <ConfigTab
+          v-if="selectedMainTab === 'config'"
+          :groups="groupedFields"
+          :selected-group="selectedConfigGroup"
+          :form-params="formParams"
+          :preview-loading="isPreviewLoading"
+          :browsermint-loading="isBrowsermintLoading"
+          :browsermint-session-disabled="!browsermintConfigured || !browsermintSessions.length"
+          :browsermint-selected-session="selectedBrowsermintSession"
+          @select-group="selectedConfigGroup = $event"
+          @update-field="updateField"
+          @open-browsermint="handleOpenBrowsermint"
+          @refresh-browsermint="loadBrowsermintSessions(true)"
+        />
 
-      <ExecutionTab
-        v-else-if="selectedMainTab === 'execution'"
-        :run="displayedRun"
-        :logs="logs"
-        :selected-job-ref="selectedExecutionJobRef"
-        :now="now"
-        @select-job="selectedExecutionJobRef = $event"
-      />
+        <CommandsTab
+          v-else-if="selectedMainTab === 'commands'"
+          :preview="preview"
+          :sqlite-status="sqliteStatus"
+          :storage-summary="storageSummary"
+        />
 
-      <DataTab
-        v-else-if="selectedMainTab === 'data'"
-        :mode="selectedDataMode"
-        :tables="sqliteTables"
-        :supported-tables="sqliteSupportedTables"
-        :filters="dataFilters"
-        :file-filters="dataFileFilters"
-        :files="dataFiles"
-        :selected-file-path="selectedDataFilePath"
-        :file-preview="selectedDataFilePreview"
-        :stats="sqliteStats"
-        :rows="sqliteRows"
-        :selected-row="selectedDataRow"
-        :selected-run="selectedRun"
-        :loading="isDataLoading"
-        :file-loading="isFileLoading"
-        :sqlite-path="sqliteStatus?.path ?? 'runtime/data/sqlite.db'"
-        @update-filter="updateDataFilter"
-        @update-file-filter="updateFileFilter"
-        @switch-mode="selectedDataMode = $event"
-        @select-file="selectedDataFilePath = $event"
-        @refresh="loadData"
-        @refresh-files="loadDataFiles"
-        @open-row="openDataRow"
-        @close-row="selectedDataRow = null"
-        @focus-execution="selectedMainTab = 'execution'"
-        @clear-run-filter="clearRunDataContext"
-      />
+        <ExecutionTab
+          v-else-if="selectedMainTab === 'execution'"
+          :run="displayedRun"
+          :logs="logs"
+          :selected-job-ref="selectedExecutionJobRef"
+          :now="now"
+          @select-job="selectedExecutionJobRef = $event"
+        />
 
-      <SystemTab
-        v-else
-        :sqlite-status="sqliteStatus"
-        :tables="sqliteTables"
-        :env-check="envCheck"
-        :loading="isSystemLoading"
-        :init-loading="isInitializingSqlite"
-        @init-sqlite="handleInitSqlite"
-        @refresh-system="refreshSystem"
-      />
+        <DataTab
+          v-else
+          :mode="selectedDataMode"
+          :tables="sqliteTables"
+          :supported-tables="sqliteSupportedTables"
+          :filters="dataFilters"
+          :file-filters="dataFileFilters"
+          :files="dataFiles"
+          :selected-file-path="selectedDataFilePath"
+          :file-preview="selectedDataFilePreview"
+          :stats="sqliteStats"
+          :rows="sqliteRows"
+          :selected-row="selectedDataRow"
+          :selected-run="displayedRun"
+          :loading="isDataLoading"
+          :file-loading="isFileLoading"
+          :sqlite-path="sqliteStatus?.path ?? 'runtime/data/sqlite.db'"
+          @update-filter="updateDataFilter"
+          @update-file-filter="updateFileFilter"
+          @switch-mode="selectedDataMode = $event"
+          @select-file="selectedDataFilePath = $event"
+          @refresh="loadData"
+          @refresh-files="loadDataFiles"
+          @open-row="openDataRow"
+          @close-row="selectedDataRow = null"
+          @focus-execution="selectedMainTab = 'execution'"
+          @clear-run-filter="clearRunDataContext"
+        />
+      </template>
     </main>
+
+    <transition name="panel-fade">
+      <div v-if="isSystemPanelOpen" class="system-panel-layer">
+        <button
+          type="button"
+          class="system-panel-backdrop"
+          aria-label="关闭系统工具面板"
+          @click="isSystemPanelOpen = false"
+        />
+        <aside class="system-panel">
+          <div class="system-panel-head">
+            <div>
+              <p class="workspace-kicker">System Tools</p>
+              <h3>系统工具面板</h3>
+              <p>查看 SQLite、watchdog 和环境检查，不打断主工作流。</p>
+            </div>
+            <button type="button" class="btn ghost small" @click="isSystemPanelOpen = false">
+              关闭
+            </button>
+          </div>
+
+          <SystemTab
+            :sqlite-status="sqliteStatus"
+            :tables="sqliteTables"
+            :env-check="envCheck"
+            :loading="isSystemLoading"
+            :init-loading="isInitializingSqlite"
+            @init-sqlite="handleInitSqlite"
+            @refresh-system="refreshSystem"
+          />
+        </aside>
+      </div>
+    </transition>
   </div>
 </template>

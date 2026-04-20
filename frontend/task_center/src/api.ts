@@ -1,4 +1,5 @@
 import type {
+  BrowsermintSessionsPayload,
   DataFileInfo,
   DataFilePreview,
   DataFileFilters,
@@ -57,6 +58,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 export async function fetchTasks(): Promise<TaskTemplate[]> {
   const payload = await request<{ tasks: TaskTemplate[] }>("/tasks");
   return payload.tasks;
+}
+
+export async function fetchBrowsermintSessions(): Promise<BrowsermintSessionsPayload> {
+  return request<BrowsermintSessionsPayload>("/browsermint/sessions");
 }
 
 export async function fetchTaskPreview(

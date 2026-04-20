@@ -45,9 +45,9 @@ const emit = defineEmits<{
   (event: "select-file", filePath: string): void;
 }>();
 
-const modeOptions: Array<{ value: DataBrowseMode; label: string }> = [
-  { value: "sqlite", label: "清洗数据" },
-  { value: "files", label: "文件结果" },
+const modeOptions: Array<{ value: DataBrowseMode; label: string; description: string }> = [
+  { value: "sqlite", label: "SQLite 结果", description: "查看清洗后的结构化结果" },
+  { value: "files", label: "文件结果", description: "查看 runtime/data 原始文件" },
 ];
 
 const sqliteTableOptions = computed(() =>
@@ -123,12 +123,60 @@ const filePreviewRows = computed<Array<Record<string, unknown>>>(() => {
 });
 
 const filePreviewColumns = computed(() => {
-  if (props.filePreview?.columns?.length) {
-    return props.filePreview.columns.slice(0, 10);
-  }
+  if (props.filePreview?.columns?.length) return props.filePreview.columns.slice(0, 8);
   const firstRow = filePreviewRows.value[0];
-  return firstRow ? Object.keys(firstRow).slice(0, 10) : [];
+  return firstRow ? Object.keys(firstRow).slice(0, 8) : [];
 });
+
+const sqliteSummaryCards = computed(() => [
+  {
+    label: "当前表",
+    value: props.filters.table,
+    note: `${props.tables.find((table) => table.name === props.filters.table)?.row_count ?? 0} rows`,
+  },
+  {
+    label: "结果数",
+    value: String(props.rows?.total ?? 0),
+    note: props.selectedRun ? "当前 run 视角" : "全局视角",
+  },
+  {
+    label: "Accepted",
+    value: String(props.stats?.observation_status_counts.accepted ?? 0),
+    note: "已进入结果集",
+  },
+  {
+    label: "Filtered",
+    value: String(props.stats?.observation_status_counts.filtered ?? 0),
+    note: "已被规则过滤",
+  },
+]);
+
+const fileSummaryCards = computed(() => [
+  {
+    label: "匹配文件",
+    value: String(visibleFiles.value.length),
+    note: "基于当前筛选",
+  },
+  {
+    label: "当前类型",
+    value: props.fileFilters.file_type || "全部",
+    note: "文件扩展名",
+  },
+  {
+    label: "选中文件",
+    value: selectedFile.value?.name || "未选择",
+    note: selectedFile.value ? formatTime(selectedFile.value.modified_at) : "等待选择",
+  },
+  {
+    label: "预览记录",
+    value: String(props.filePreview?.total ?? 0),
+    note: "原始预览数据",
+  },
+]);
+
+const hasSqliteAdvancedFilters = computed(() =>
+  Boolean(props.filters.run_id || props.filters.task_slug || props.filters.clean_status),
+);
 
 function prettyCell(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
@@ -176,21 +224,21 @@ function fileResultLabel(): string {
 
 function resultDescription(): string {
   if (props.mode === "sqlite") {
-    return "只读浏览 SQLite 清洗结果，支持 run、平台、实体和清洗状态筛选。";
+    return "围绕当前 run 浏览 SQLite 清洗结果，常用筛选前置，技术筛选下沉到高级面板。";
   }
-  return "浏览 runtime/data 目录下的 JSON / CSV / Excel 结果文件，并预览原始抓取输出。";
+  return "围绕当前 run 浏览 runtime/data 目录下的 JSON / CSV / Excel 文件，并预览原始输出。";
 }
 </script>
 
 <template>
-  <section class="tab-panel">
+  <section class="tab-panel results-tab">
     <div class="tab-panel-head">
       <div>
-        <h2>数据</h2>
+        <h2>结果中心</h2>
         <p>{{ resultDescription() }}</p>
       </div>
 
-      <div class="data-toolbar">
+      <div class="results-head-actions">
         <div class="data-mode-tabs">
           <button
             v-for="option in modeOptions"
@@ -199,18 +247,23 @@ function resultDescription(): string {
             :class="{ active: mode === option.value }"
             @click="emit('switch-mode', option.value)"
           >
-            {{ option.label }}
+            <strong>{{ option.label }}</strong>
+            <span>{{ option.description }}</span>
           </button>
         </div>
 
-        <button v-if="mode === 'sqlite'" class="btn secondary" @click="emit('refresh')">刷新 SQLite</button>
-        <button v-else class="btn secondary" @click="emit('refresh-files')">刷新文件</button>
+        <button v-if="mode === 'sqlite'" class="btn secondary" @click="emit('refresh')">
+          刷新 SQLite
+        </button>
+        <button v-else class="btn secondary" @click="emit('refresh-files')">
+          刷新文件
+        </button>
       </div>
     </div>
 
     <article v-if="selectedRun" class="run-context-card">
       <div class="run-context-copy">
-        <span class="run-context-kicker">当前结果上下文</span>
+        <span class="run-context-kicker">Result Context</span>
         <h3>{{ selectedRun.title }}</h3>
         <p>{{ selectedRun.id }} · {{ formatTime(selectedRun.started_at) }} · {{ selectedRun.status }}</p>
         <p v-if="mode === 'files'">
@@ -235,68 +288,109 @@ function resultDescription(): string {
 
       <div class="run-context-actions">
         <span class="state-chip" :class="mode === 'sqlite' && filters.run_id ? 'success' : 'neutral'">
-          {{ mode === "sqlite" ? (filters.run_id ? "已过滤到本次 run" : "当前为全局视图") : "文件视图按目录浏览" }}
+          {{ mode === "sqlite" ? (filters.run_id ? "已绑定当前 run" : "当前为全局结果视图") : `${fileResultLabel()} · runtime/data` }}
         </span>
-        <span class="state-chip neutral">
-          {{ mode === "sqlite" ? `表：${filters.table}` : `${fileResultLabel()} · runtime/data` }}
-        </span>
-        <button class="btn ghost small" @click="emit('focus-execution')">查看执行</button>
-        <button v-if="mode === 'sqlite'" class="btn ghost small" :disabled="!filters.run_id" @click="emit('clear-run-filter')">
+        <button class="btn ghost small" @click="emit('focus-execution')">查看运行监控</button>
+        <button
+          v-if="mode === 'sqlite'"
+          class="btn ghost small"
+          :disabled="!filters.run_id"
+          @click="emit('clear-run-filter')"
+        >
           清除 run 过滤
         </button>
       </div>
     </article>
 
-    <template v-if="mode === 'sqlite'">
-      <div class="data-filters">
-        <SelectField
-          :model-value="filters.table"
-          :options="sqliteTableOptions"
-          @update:model-value="emit('update-filter', 'table', $event)"
-        />
-        <input :value="filters.run_id" placeholder="run_id" @input="emit('update-filter', 'run_id', ($event.target as HTMLInputElement).value)" />
-        <input :value="filters.task_slug" placeholder="task_slug" @input="emit('update-filter', 'task_slug', ($event.target as HTMLInputElement).value)" />
-        <SelectField
-          :model-value="filters.platform"
-          :options="platformOptions"
-          @update:model-value="emit('update-filter', 'platform', $event)"
-        />
-        <SelectField
-          :model-value="filters.entity_type"
-          :options="entityTypeOptions"
-          @update:model-value="emit('update-filter', 'entity_type', $event)"
-        />
-        <SelectField
-          :model-value="filters.clean_status"
-          :options="cleanStatusOptions"
-          @update:model-value="emit('update-filter', 'clean_status', $event)"
-        />
-        <input class="search" :value="filters.q" placeholder="关键词 / 文本搜索" @input="emit('update-filter', 'q', ($event.target as HTMLInputElement).value)" />
-      </div>
-
-      <div class="data-overview">
-        <article class="data-stat">
-          <span>当前表</span>
-          <strong>{{ filters.table }}</strong>
-        </article>
-        <article class="data-stat">
-          <span>结果数</span>
-          <strong>{{ rows?.total ?? 0 }}</strong>
-        </article>
-        <article class="data-stat">
-          <span>Accepted</span>
-          <strong>{{ stats?.observation_status_counts.accepted ?? 0 }}</strong>
-        </article>
-        <article class="data-stat">
-          <span>Filtered</span>
-          <strong>{{ stats?.observation_status_counts.filtered ?? 0 }}</strong>
+    <div v-if="mode === 'sqlite'" class="results-stack">
+      <div class="results-summary-grid">
+        <article v-for="card in sqliteSummaryCards" :key="card.label" class="summary-metric-card">
+          <span>{{ card.label }}</span>
+          <strong>{{ card.value }}</strong>
+          <small>{{ card.note }}</small>
         </article>
       </div>
 
-      <div class="data-layout">
-        <section class="data-table-card">
+      <section class="results-filter-panel">
+        <div class="filter-grid">
+          <label class="filter-field">
+            <span>数据表</span>
+            <SelectField
+              :model-value="filters.table"
+              :options="sqliteTableOptions"
+              @update:model-value="emit('update-filter', 'table', $event)"
+            />
+          </label>
+
+          <label class="filter-field">
+            <span>平台</span>
+            <SelectField
+              :model-value="filters.platform"
+              :options="platformOptions"
+              @update:model-value="emit('update-filter', 'platform', $event)"
+            />
+          </label>
+
+          <label class="filter-field">
+            <span>实体类型</span>
+            <SelectField
+              :model-value="filters.entity_type"
+              :options="entityTypeOptions"
+              @update:model-value="emit('update-filter', 'entity_type', $event)"
+            />
+          </label>
+
+          <label class="filter-field filter-field-wide">
+            <span>文本搜索</span>
+            <input
+              :value="filters.q"
+              placeholder="关键词 / 标题 / 文本片段"
+              @input="emit('update-filter', 'q', ($event.target as HTMLInputElement).value)"
+            />
+          </label>
+        </div>
+
+        <details class="advanced-filter-panel" :open="hasSqliteAdvancedFilters">
+          <summary>高级筛选</summary>
+          <div class="advanced-filter-grid">
+            <label class="filter-field">
+              <span>清洗状态</span>
+              <SelectField
+                :model-value="filters.clean_status"
+                :options="cleanStatusOptions"
+                @update:model-value="emit('update-filter', 'clean_status', $event)"
+              />
+            </label>
+
+            <label class="filter-field">
+              <span>run_id</span>
+              <input
+                :value="filters.run_id"
+                placeholder="run_id"
+                @input="emit('update-filter', 'run_id', ($event.target as HTMLInputElement).value)"
+              />
+            </label>
+
+            <label class="filter-field">
+              <span>task_slug</span>
+              <input
+                :value="filters.task_slug"
+                placeholder="task_slug"
+                @input="emit('update-filter', 'task_slug', ($event.target as HTMLInputElement).value)"
+              />
+            </label>
+          </div>
+        </details>
+      </section>
+
+      <div class="results-layout">
+        <section class="results-main-card">
           <div class="table-toolbar">
-            <span>{{ pageLabel() }}</span>
+            <div>
+              <strong>{{ pageLabel() }}</strong>
+              <span>SQLite · {{ props.sqlitePath }}</span>
+            </div>
+
             <div class="topbar-inline-actions">
               <button
                 class="btn ghost small"
@@ -315,7 +409,7 @@ function resultDescription(): string {
             </div>
           </div>
 
-          <div v-if="loading" class="empty-state">数据加载中…</div>
+          <div v-if="loading" class="empty-state">SQLite 结果加载中…</div>
           <div v-else-if="rows?.rows.length" class="table-wrap">
             <table class="data-table">
               <thead>
@@ -337,64 +431,74 @@ function resultDescription(): string {
             </table>
           </div>
           <div v-else class="empty-state">
-            {{ selectedRun ? `当前 run 在 ${filters.table} 下还没有匹配记录，可以试试切换别的表。` : "当前筛选条件下没有数据。" }}
+            {{ selectedRun ? `当前 run 在 ${filters.table} 下还没有匹配记录，可以切换表或放宽筛选条件。` : "当前筛选条件下没有数据。" }}
           </div>
         </section>
 
-        <aside class="row-drawer">
+        <aside class="results-inspector">
           <div class="row-drawer-head">
-            <h3>原始 JSON</h3>
-            <button class="btn ghost small" :disabled="!selectedRow" @click="emit('close-row')">关闭</button>
+            <div>
+              <h3>结果 Inspector</h3>
+              <p>选中一行后在这里查看完整 JSON。</p>
+            </div>
+            <button class="btn ghost small" :disabled="!selectedRow" @click="emit('close-row')">
+              清空
+            </button>
           </div>
+
           <pre v-if="selectedRow"><code>{{ JSON.stringify(selectedRow, null, 2) }}</code></pre>
-          <div v-else class="empty-state">从表格中选择一行后，这里会展示完整记录。</div>
+          <div v-else class="empty-state compact">从左侧结果表格中选择一行后，这里会展示完整记录。</div>
         </aside>
       </div>
-    </template>
+    </div>
 
-    <template v-else>
-      <div class="file-filters">
-        <SelectField
-          :model-value="fileFilters.platform"
-          :options="platformOptions"
-          @update:model-value="emit('update-file-filter', 'platform', $event)"
-        />
-        <SelectField
-          :model-value="fileFilters.file_type"
-          :options="fileTypeOptions"
-          @update:model-value="emit('update-file-filter', 'file_type', $event)"
-        />
-        <input
-          class="search"
-          :value="fileFilters.q"
-          placeholder="按文件名 / 路径搜索"
-          @input="emit('update-file-filter', 'q', ($event.target as HTMLInputElement).value)"
-        />
+    <div v-else class="results-stack">
+      <div class="results-summary-grid">
+        <article v-for="card in fileSummaryCards" :key="card.label" class="summary-metric-card">
+          <span>{{ card.label }}</span>
+          <strong>{{ card.value }}</strong>
+          <small>{{ card.note }}</small>
+        </article>
       </div>
 
-      <div class="data-overview">
-        <article class="data-stat">
-          <span>匹配文件</span>
-          <strong>{{ visibleFiles.length }}</strong>
-        </article>
-        <article class="data-stat">
-          <span>当前类型</span>
-          <strong>{{ fileFilters.file_type || "全部" }}</strong>
-        </article>
-        <article class="data-stat">
-          <span>选中文件</span>
-          <strong>{{ selectedFile?.name || "未选择" }}</strong>
-        </article>
-        <article class="data-stat">
-          <span>预览记录</span>
-          <strong>{{ filePreview?.total ?? 0 }}</strong>
-        </article>
-      </div>
+      <section class="results-filter-panel">
+        <div class="filter-grid">
+          <label class="filter-field">
+            <span>平台</span>
+            <SelectField
+              :model-value="fileFilters.platform"
+              :options="platformOptions"
+              @update:model-value="emit('update-file-filter', 'platform', $event)"
+            />
+          </label>
+
+          <label class="filter-field">
+            <span>文件类型</span>
+            <SelectField
+              :model-value="fileFilters.file_type"
+              :options="fileTypeOptions"
+              @update:model-value="emit('update-file-filter', 'file_type', $event)"
+            />
+          </label>
+
+          <label class="filter-field filter-field-wide">
+            <span>文件搜索</span>
+            <input
+              :value="fileFilters.q"
+              placeholder="按文件名 / 路径搜索"
+              @input="emit('update-file-filter', 'q', ($event.target as HTMLInputElement).value)"
+            />
+          </label>
+        </div>
+      </section>
 
       <div class="file-browser-layout">
         <aside class="file-sidebar">
           <div class="table-toolbar">
-            <span>runtime/data</span>
+            <div>
+              <strong>runtime/data</strong>
+              <span>{{ visibleFiles.length }} 个匹配文件</span>
+            </div>
             <span class="state-chip neutral">{{ fileFilters.file_type || "all" }}</span>
           </div>
 
@@ -434,27 +538,22 @@ function resultDescription(): string {
               </a>
             </div>
 
-            <div class="kv-table file-kv-table">
-              <div class="kv-row">
+            <div class="preview-kv-grid">
+              <article class="summary-metric-card">
                 <span>类型</span>
                 <strong>{{ selectedFile.type.toUpperCase() }}</strong>
-              </div>
-              <div class="kv-row">
+                <small>{{ fileResultLabel() }}</small>
+              </article>
+              <article class="summary-metric-card">
                 <span>大小</span>
                 <strong>{{ formatBytes(selectedFile.size) }}</strong>
-              </div>
-              <div class="kv-row">
+                <small>{{ formatTime(selectedFile.modified_at) }}</small>
+              </article>
+              <article class="summary-metric-card">
                 <span>记录数</span>
                 <strong>{{ selectedFile.record_count ?? filePreview?.total ?? "—" }}</strong>
-              </div>
-              <div class="kv-row">
-                <span>最近修改</span>
-                <strong>{{ formatTime(selectedFile.modified_at) }}</strong>
-              </div>
-              <div class="kv-row">
-                <span>SQLite</span>
-                <code>{{ sqlitePath }}</code>
-              </div>
+                <small>预览或文件统计</small>
+              </article>
             </div>
 
             <div v-if="fileLoading" class="empty-state">文件预览加载中…</div>
@@ -476,19 +575,355 @@ function resultDescription(): string {
               </table>
             </div>
 
-            <article class="row-drawer file-json-view">
+            <article class="results-inspector file-inspector">
               <div class="row-drawer-head">
-                <h3>原始预览</h3>
-                <span>{{ filePreview?.total ?? 0 }} records</span>
+                <div>
+                  <h3>原始预览</h3>
+                  <p>{{ filePreview?.total ?? 0 }} records · SQLite {{ sqlitePath }}</p>
+                </div>
               </div>
               <pre v-if="filePreview"><code>{{ JSON.stringify(filePreview.data, null, 2) }}</code></pre>
-              <div v-else class="empty-state">选择文件后，这里会展示预览内容。</div>
+              <div v-else class="empty-state compact">选择文件后，这里会展示原始预览内容。</div>
             </article>
           </div>
 
           <div v-else class="empty-state">从左侧选择文件后，这里会展示表格预览和原始内容。</div>
         </section>
       </div>
-    </template>
+    </div>
   </section>
 </template>
+
+<style scoped>
+.results-tab {
+  gap: 20px;
+}
+
+.results-head-actions,
+.run-context-card,
+.run-context-actions,
+.filter-grid,
+.advanced-filter-grid,
+.results-layout,
+.results-summary-grid,
+.file-browser-layout,
+.preview-kv-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.results-head-actions {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.data-mode-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.data-mode-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(20, 35, 55, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+  text-align: left;
+  color: var(--ink);
+}
+
+.data-mode-tab.active {
+  border-color: rgba(31, 79, 209, 0.24);
+  background: linear-gradient(145deg, rgba(232, 241, 255, 0.88), rgba(255, 255, 255, 0.98));
+  box-shadow: 0 12px 26px rgba(31, 79, 209, 0.1);
+}
+
+.data-mode-tab span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.run-context-card {
+  grid-template-columns: minmax(220px, 1.1fr) repeat(2, minmax(0, 1fr));
+  align-items: center;
+  padding: 18px 20px;
+  border-radius: 22px;
+  border: 1px solid rgba(20, 35, 55, 0.08);
+  background:
+    linear-gradient(135deg, rgba(249, 244, 238, 0.88), rgba(255, 255, 255, 0.98)),
+    var(--panel-strong);
+  box-shadow: 0 18px 40px rgba(20, 35, 55, 0.05);
+}
+
+.run-context-copy,
+.run-context-actions,
+.results-stack,
+.preview-stack,
+.file-item-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.run-context-kicker {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: rgba(31, 79, 209, 0.1);
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.run-context-copy h3,
+.file-preview-head h3 {
+  margin: 0;
+}
+
+.run-context-copy p,
+.file-preview-head p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.run-context-metrics,
+.results-summary-grid,
+.preview-kv-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.run-context-metric,
+.summary-metric-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(20, 35, 55, 0.08);
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.run-context-metric span,
+.summary-metric-card span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.run-context-metric strong,
+.summary-metric-card strong {
+  font-size: 22px;
+  font-family: "Manrope", sans-serif;
+}
+
+.summary-metric-card small {
+  color: var(--muted);
+}
+
+.run-context-actions {
+  align-items: flex-end;
+}
+
+.results-filter-panel,
+.results-main-card,
+.results-inspector,
+.file-sidebar,
+.file-preview-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid rgba(20, 35, 55, 0.08);
+  background: rgba(255, 255, 255, 0.84);
+}
+
+.filter-grid,
+.advanced-filter-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.filter-field span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.filter-field input {
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(20, 35, 55, 0.12);
+  background: rgba(255, 255, 255, 0.96);
+  color: var(--ink);
+}
+
+.filter-field-wide {
+  grid-column: span 2;
+}
+
+.advanced-filter-panel {
+  padding-top: 4px;
+  border-top: 1px solid rgba(20, 35, 55, 0.08);
+}
+
+.advanced-filter-panel summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.advanced-filter-grid {
+  margin-top: 12px;
+}
+
+.results-layout {
+  grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.85fr);
+}
+
+.table-toolbar,
+.row-drawer-head,
+.file-preview-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.table-toolbar > div,
+.row-drawer-head > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.table-toolbar span,
+.row-drawer-head p {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0;
+}
+
+.results-inspector pre,
+.file-inspector pre {
+  margin: 0;
+  max-height: 640px;
+  padding: 16px;
+  border-radius: 18px;
+  background: #101722;
+  color: #dbe6f5;
+  overflow: auto;
+}
+
+.file-browser-layout {
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  align-items: start;
+}
+
+.file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.file-item {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(20, 35, 55, 0.08);
+  background: rgba(248, 250, 252, 0.9);
+  text-align: left;
+  color: inherit;
+}
+
+.file-item.active {
+  border-color: rgba(31, 79, 209, 0.22);
+  background: linear-gradient(145deg, rgba(234, 242, 255, 0.92), rgba(255, 255, 255, 0.98));
+  box-shadow: 0 16px 32px rgba(31, 79, 209, 0.08);
+}
+
+.file-item-copy span {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.file-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.file-item-meta small {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(20, 35, 55, 0.06);
+  color: var(--muted);
+}
+
+@media (max-width: 1280px) {
+  .run-context-card,
+  .results-layout,
+  .file-browser-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1024px) {
+  .results-head-actions,
+  .filter-grid,
+  .advanced-filter-grid,
+  .run-context-metrics,
+  .results-summary-grid,
+  .preview-kv-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .filter-field-wide {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 720px) {
+  .results-head-actions,
+  .data-mode-tabs,
+  .filter-grid,
+  .advanced-filter-grid,
+  .run-context-metrics,
+  .results-summary-grid,
+  .preview-kv-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .filter-field-wide {
+    grid-column: span 1;
+  }
+
+  .run-context-actions {
+    align-items: flex-start;
+  }
+}
+</style>

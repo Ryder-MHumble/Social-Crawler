@@ -34,6 +34,10 @@ const socketLabel = computed(() => {
   return "已断开";
 });
 
+const selectedTask = computed(
+  () => props.tasks.find((task) => task.slug === props.selectedTaskSlug) ?? null,
+);
+
 const mergedRuns = computed(() => {
   const merged: TaskRun[] = [];
   const seen = new Set<string>();
@@ -66,16 +70,16 @@ function formatTime(value?: string | null): string {
 }
 
 function runHint(run: TaskRun): string {
-  if (runFilterKey(run.status) === "running") return "点击查看执行回放";
+  if (runFilterKey(run.status) === "running") return "查看执行回放";
   const saveOption = String(
     run.normalized_params.save_option ?? run.normalized_params.save_data_option ?? "",
   )
     .trim()
     .toLowerCase();
   if (["json", "csv", "excel"].includes(saveOption)) {
-    return "点击查看文件结果";
+    return "查看文件结果";
   }
-  return "点击查看清洗结果";
+  return "查看清洗结果";
 }
 
 function normalizeStatus(status?: string | null): string {
@@ -136,32 +140,38 @@ function shortRunId(runId: string): string {
 
 <template>
   <aside class="workspace-sidebar">
-    <section class="sidebar-card sidebar-brand">
-      <p class="sidebar-kicker">Task Workspace</p>
-      <h1>Social-Crawler</h1>
-      <p class="sidebar-copy">任务、命令、执行和数据都收口到一个工作台里。</p>
-    </section>
-
-    <section class="sidebar-card sidebar-status">
-      <div class="sidebar-stat">
-        <span class="sidebar-label">连接</span>
-        <strong :class="`status-${socketState}`">{{ socketLabel }}</strong>
+    <section class="sidebar-brand-strip">
+      <div class="brand-lockup">
+        <p class="sidebar-kicker">Quiet Ops</p>
+        <h1>Social-Crawler</h1>
       </div>
-      <div class="sidebar-stat">
-        <span class="sidebar-label">SQLite</span>
-        <strong :class="sqliteReady ? 'status-success' : 'status-warning'">
-          {{ sqliteReady ? "已就绪" : "未初始化" }}
-        </strong>
-      </div>
-      <div class="sidebar-stat">
-        <span class="sidebar-label">当前预设</span>
-        <strong>{{ currentPresetName || "未选择" }}</strong>
+      <div class="brand-context">
+        <span class="context-label">当前任务</span>
+        <strong>{{ selectedTask?.title || "未选择任务" }}</strong>
       </div>
     </section>
 
-    <section class="sidebar-block">
+    <section class="sidebar-system-strip" aria-label="系统状态">
+      <span class="system-pill" :class="`is-${socketState}`">
+        <span class="system-pill-label">Socket</span>
+        <strong>{{ socketLabel }}</strong>
+      </span>
+      <span class="system-pill" :class="sqliteReady ? 'is-success' : 'is-warning'">
+        <span class="system-pill-label">SQLite</span>
+        <strong>{{ sqliteReady ? "已就绪" : "待初始化" }}</strong>
+      </span>
+      <span class="system-pill is-neutral preset-pill">
+        <span class="system-pill-label">Preset</span>
+        <strong>{{ currentPresetName || "任务默认值" }}</strong>
+      </span>
+    </section>
+
+    <section class="sidebar-block task-block">
       <div class="sidebar-block-head">
-        <h2>任务</h2>
+        <div>
+          <p>Task Set</p>
+          <h2>任务空间</h2>
+        </div>
         <span>{{ tasks.length }}</span>
       </div>
       <div class="sidebar-list">
@@ -180,7 +190,10 @@ function shortRunId(runId: string): string {
 
     <section class="sidebar-block sidebar-runs">
       <div class="sidebar-block-head">
-        <h2>最近运行</h2>
+        <div>
+          <p>Run Switcher</p>
+          <h2>最近运行</h2>
+        </div>
         <span>{{ filteredRuns.length }}/{{ mergedRuns.length }}</span>
       </div>
       <div class="run-filters" role="tablist" aria-label="运行记录筛选">
@@ -204,14 +217,16 @@ function shortRunId(runId: string): string {
           :class="{ active: selectedRunId === run.id }"
           @click="emit('select-run', run.id)"
         >
-          <strong>{{ run.title }}</strong>
-          <span class="run-item-id">{{ shortRunId(run.id) }}</span>
-          <small class="run-item-meta">
-            <span>{{ formatTime(run.started_at) }}</span>
+          <div class="run-item-topline">
+            <strong>{{ run.title }}</strong>
             <span class="run-status-chip" :class="`is-${statusTone(run.status)}`">
               {{ statusLabel(run.status) }}
             </span>
-          </small>
+          </div>
+          <div class="run-item-meta">
+            <span class="run-item-id">{{ shortRunId(run.id) }}</span>
+            <span>{{ formatTime(run.started_at) }}</span>
+          </div>
           <small class="run-item-hint">{{ runHint(run) }}</small>
         </button>
         <p v-if="!filteredRuns.length" class="run-empty-tip">当前筛选下暂无运行记录</p>
@@ -219,3 +234,391 @@ function shortRunId(runId: string): string {
     </section>
   </aside>
 </template>
+
+<style scoped>
+.workspace-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  color: var(--ink, #17202b);
+}
+
+.sidebar-brand-strip,
+.sidebar-block {
+  border: 1px solid rgba(20, 28, 38, 0.1);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(247, 242, 234, 0.82)),
+    rgba(255, 255, 255, 0.9);
+  box-shadow: 0 16px 32px rgba(19, 26, 35, 0.04);
+}
+
+.sidebar-brand-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+}
+
+.brand-lockup {
+  min-width: 0;
+}
+
+.sidebar-kicker {
+  margin: 0 0 4px;
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted, #6d7784);
+}
+
+.brand-lockup h1 {
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.1;
+  font-weight: 700;
+}
+
+.brand-context {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding-left: 12px;
+  border-left: 1px solid rgba(20, 28, 38, 0.08);
+  text-align: right;
+}
+
+.context-label {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted, #6d7784);
+}
+
+.brand-context strong {
+  max-width: 180px;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-system-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.system-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid rgba(20, 28, 38, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.74);
+  color: var(--ink, #17202b);
+}
+
+.preset-pill {
+  flex: 1 1 180px;
+}
+
+.system-pill-label {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted, #6d7784);
+}
+
+.system-pill strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.system-pill.is-connected {
+  border-color: rgba(38, 110, 74, 0.18);
+  background: rgba(228, 244, 234, 0.9);
+  color: #235b3b;
+}
+
+.system-pill.is-connecting,
+.system-pill.is-warning {
+  border-color: rgba(164, 105, 21, 0.18);
+  background: rgba(250, 238, 214, 0.94);
+  color: #8c5f1d;
+}
+
+.system-pill.is-disconnected {
+  border-color: rgba(140, 58, 48, 0.16);
+  background: rgba(248, 232, 228, 0.94);
+  color: #8c3a30;
+}
+
+.system-pill.is-success {
+  border-color: rgba(38, 110, 74, 0.18);
+  background: rgba(228, 244, 234, 0.9);
+  color: #235b3b;
+}
+
+.system-pill.is-neutral {
+  border-color: rgba(20, 28, 38, 0.08);
+  background: rgba(255, 255, 255, 0.76);
+  color: var(--ink, #17202b);
+}
+
+.sidebar-block {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+}
+
+.sidebar-block-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sidebar-block-head p {
+  margin: 0 0 2px;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted, #6d7784);
+}
+
+.sidebar-block-head h2 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.sidebar-block-head > span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(20, 28, 38, 0.06);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted, #6d7784);
+}
+
+.sidebar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebar-item {
+  width: 100%;
+  border: 1px solid rgba(20, 28, 38, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.74);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    transform 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.sidebar-item:hover {
+  border-color: rgba(20, 28, 38, 0.18);
+  background: rgba(255, 255, 255, 0.95);
+  transform: translateY(-1px);
+}
+
+.sidebar-item:focus-visible {
+  outline: 2px solid rgba(166, 82, 44, 0.36);
+  outline-offset: 2px;
+}
+
+.task-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 11px 12px;
+}
+
+.task-item strong,
+.run-item strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-item span {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11px;
+  color: var(--muted, #6d7784);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-item.active {
+  border-color: rgba(166, 82, 44, 0.3);
+  background: linear-gradient(180deg, rgba(255, 249, 242, 0.98), rgba(252, 242, 232, 0.94));
+  box-shadow: inset 3px 0 0 #b6663d;
+}
+
+.run-filters {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px;
+  border: 1px solid rgba(20, 28, 38, 0.08);
+  border-radius: 999px;
+  background: rgba(244, 239, 233, 0.86);
+}
+
+.run-filter-tab {
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  padding: 7px 12px;
+  font-size: 12px;
+  color: var(--muted, #6d7784);
+  cursor: pointer;
+  transition:
+    background 160ms ease,
+    color 160ms ease;
+}
+
+.run-filter-tab.active {
+  background: rgba(255, 255, 255, 0.96);
+  color: var(--ink, #17202b);
+  box-shadow: 0 4px 12px rgba(19, 26, 35, 0.06);
+}
+
+.run-list {
+  gap: 10px;
+}
+
+.run-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+
+.run-item.active {
+  border-color: rgba(91, 116, 153, 0.3);
+  background: linear-gradient(180deg, rgba(245, 248, 252, 0.98), rgba(236, 241, 247, 0.94));
+  box-shadow: 0 10px 24px rgba(34, 46, 62, 0.08);
+}
+
+.run-item-topline,
+.run-item-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.run-item-meta {
+  font-size: 11px;
+  color: var(--muted, #6d7784);
+}
+
+.run-item-id {
+  min-width: 0;
+  overflow: hidden;
+  font-family: "SFMono-Regular", "SFMono", "IBM Plex Mono", monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-item-hint {
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--muted, #6d7784);
+}
+
+.run-status-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  min-width: 56px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.run-status-chip.is-running {
+  background: rgba(227, 239, 255, 0.92);
+  color: #31598d;
+}
+
+.run-status-chip.is-failed {
+  background: rgba(248, 232, 228, 0.94);
+  color: #8c3a30;
+}
+
+.run-status-chip.is-done {
+  background: rgba(228, 244, 234, 0.9);
+  color: #235b3b;
+}
+
+.run-status-chip.is-neutral {
+  background: rgba(20, 28, 38, 0.08);
+  color: var(--muted, #6d7784);
+}
+
+.run-empty-tip {
+  margin: 0;
+  padding: 18px 12px;
+  border: 1px dashed rgba(20, 28, 38, 0.14);
+  border-radius: 14px;
+  font-size: 12px;
+  text-align: center;
+  color: var(--muted, #6d7784);
+}
+
+@media (max-width: 920px) {
+  .sidebar-brand-strip {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .brand-context {
+    width: 100%;
+    padding-left: 0;
+    padding-top: 10px;
+    border-left: 0;
+    border-top: 1px solid rgba(20, 28, 38, 0.08);
+    text-align: left;
+  }
+
+  .brand-context strong {
+    max-width: none;
+  }
+
+  .run-item-topline,
+  .run-item-meta {
+    flex-wrap: wrap;
+  }
+}
+</style>
