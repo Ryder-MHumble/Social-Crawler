@@ -44,6 +44,7 @@ class CDPBrowserManager:
         self.browser_context: Optional[BrowserContext] = None
         self.debug_port: Optional[int] = None
         self._cleanup_registered = False
+        self._remote_mode: bool = False
 
     def _register_cleanup_handlers(self):
         """
@@ -103,23 +104,30 @@ class CDPBrowserManager:
         headless: bool = False,
     ) -> BrowserContext:
         """
-        Launch browser and connect via CDP
+        Launch browser and connect via CDP. When ``config.CDP_REMOTE_WS_URL`` is set,
+        skip the local launch flow and connect to a remote browser directly.
         """
         try:
-            # 1. Detect browser path
-            browser_path = await self._get_browser_path()
+            remote_ws_url = (getattr(config, "CDP_REMOTE_WS_URL", "") or "").strip()
+            if remote_ws_url:
+                self._remote_mode = True
+                await self._connect_remote(playwright, remote_ws_url)
+            else:
+                self._remote_mode = False
+                # 1. Detect browser path
+                browser_path = await self._get_browser_path()
 
-            # 2. Get available port
-            self.debug_port = self.launcher.find_available_port(config.CDP_DEBUG_PORT)
+                # 2. Get available port
+                self.debug_port = self.launcher.find_available_port(config.CDP_DEBUG_PORT)
 
-            # 3. Launch browser
-            await self._launch_browser(browser_path, headless)
+                # 3. Launch browser
+                await self._launch_browser(browser_path, headless)
 
-            # 4. Register cleanup handlers (ensure cleanup on abnormal exit)
-            self._register_cleanup_handlers()
+                # 4. Register cleanup handlers (ensure cleanup on abnormal exit)
+                self._register_cleanup_handlers()
 
-            # 5. Connect via CDP
-            await self._connect_via_cdp(playwright)
+                # 5. Connect via CDP
+                await self._connect_via_cdp(playwright)
 
             # 6. Create browser context
             browser_context = await self._create_browser_context(
@@ -133,6 +141,21 @@ class CDPBrowserManager:
             utils.logger.error(f"[CDPBrowserManager] CDP browser launch failed: {e}")
             await self.cleanup()
             raise
+
+    async def _connect_remote(self, playwright: Playwright, ws_url: str):
+        """Connect to a remote CDP browser endpoint (e.g. hosted browserless)."""
+        headers = getattr(config, "CDP_REMOTE_HEADERS", None) or None
+        # Mask token in log output so it does not leak into task logs.
+        safe_url = ws_url.split("?", 1)[0] + ("?<token hidden>" if "?" in ws_url else "")
+        utils.logger.info(f"[CDPBrowserManager] Connecting to remote CDP: {safe_url}")
+        self.browser = await playwright.chromium.connect_over_cdp(
+            ws_url, headers=headers
+        )
+        if not self.browser.is_connected():
+            raise RuntimeError("Remote CDP connection failed")
+        utils.logger.info(
+            f"[CDPBrowserManager] Remote CDP connected, contexts={len(self.browser.contexts)}"
+        )
 
     async def _get_browser_path(self) -> str:
         """
@@ -307,10 +330,16 @@ class CDPBrowserManager:
 
             # Note: Proxy settings may not work in CDP mode since browser is already launched
             if playwright_proxy:
-                utils.logger.warning(
-                    "[CDPBrowserManager] Warning: Proxy settings may not work in CDP mode, "
-                    "recommend configuring system proxy or browser proxy extension before launching browser"
-                )
+                if self._remote_mode:
+                    utils.logger.warning(
+                        "[CDPBrowserManager] Proxy settings are ignored in remote CDP mode; "
+                        "configure the proxy on the remote browser service instead"
+                    )
+                else:
+                    utils.logger.warning(
+                        "[CDPBrowserManager] Warning: Proxy settings may not work in CDP mode, "
+                        "recommend configuring system proxy or browser proxy extension before launching browser"
+                    )
 
             browser_context = await self.browser.new_context(**context_options)
             utils.logger.info("[CDPBrowserManager] Created new browser context")
@@ -410,9 +439,15 @@ class CDPBrowserManager:
                     self.browser = None
 
             # Close browser process
+            # Remote mode has no local process — browser.close() above already dropped
+            # the connection, and the remote service owns the browser lifecycle.
+            if self._remote_mode:
+                utils.logger.debug(
+                    "[CDPBrowserManager] Remote CDP mode, skipping local process cleanup"
+                )
             # force=True means force close, ignoring AUTO_CLOSE_BROWSER config
             # Used for handling abnormal exit or manual cleanup
-            if force or config.AUTO_CLOSE_BROWSER:
+            elif force or config.AUTO_CLOSE_BROWSER:
                 if self.launcher and self.launcher.browser_process:
                     self.launcher.cleanup()
                 else:
