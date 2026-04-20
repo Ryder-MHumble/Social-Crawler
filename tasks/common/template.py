@@ -24,6 +24,11 @@ class TaskField:
     group: str = "General"
     required: bool = False
     options: list[TaskFieldOption] = field(default_factory=list)
+    placeholder: str = ""
+    rows: int | None = None
+    layout: str = "default"
+    helper_text: str = ""
+    badge: str = ""
     visible_when: dict[str, Any] | None = None
     disabled_when: dict[str, Any] | None = None
     validation: dict[str, Any] | None = None

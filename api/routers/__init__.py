@@ -18,6 +18,7 @@
 
 from .crawler import router as crawler_router
 from .data import router as data_router
+from .storage import router as storage_router
 from .task_center import router as task_center_router
 from .task_center_ws import router as task_center_ws_router
 from .websocket import router as websocket_router
@@ -25,6 +26,7 @@ from .websocket import router as websocket_router
 __all__ = [
     "crawler_router",
     "data_router",
+    "storage_router",
     "task_center_router",
     "task_center_ws_router",
     "websocket_router",

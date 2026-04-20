@@ -33,6 +33,13 @@ def _build_initial_snapshot(
         "started_at": started_at,
         "finished_at": None,
         "log_path": "",
+        "metrics": {
+            "accepted": 0,
+            "filtered": 0,
+            "deduped": 0,
+            "errors": 0,
+            "stalled_jobs": 0,
+        },
         "stages": [
             {
                 "key": stage.key,
@@ -51,6 +58,12 @@ def _build_initial_snapshot(
                         "exit_code": None,
                         "line_count": 0,
                         "last_line": "",
+                        "pid": None,
+                        "last_output_at": None,
+                        "last_state_change_at": None,
+                        "watchdog_status": "idle",
+                        "stall_deadline_at": None,
+                        "termination_reason": None,
                         "started_at": None,
                         "finished_at": None,
                     }

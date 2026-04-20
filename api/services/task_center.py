@@ -14,6 +14,13 @@ from tools import runtime_paths
 from .task_center_store import TaskCenterFileStore
 from .task_run_manager import TaskRunManager
 
+_PARAM_ALIAS_GROUPS = (
+    ("keywords", ("search_keywords",)),
+    ("max_notes_count", ("top_posts_count", "max_notes_per_keyword")),
+    ("max_comments_count_singlenotes", ("top_comments_count",)),
+    ("specified_account_ids", ("creator_ids",)),
+)
+
 
 def _serialize_option(option: TaskFieldOption) -> dict[str, Any]:
     return {
@@ -33,6 +40,11 @@ def _serialize_field(field: TaskField) -> dict[str, Any]:
         "group": field.group,
         "required": field.required,
         "options": [_serialize_option(option) for option in field.options],
+        "placeholder": field.placeholder,
+        "rows": field.rows,
+        "layout": field.layout,
+        "helper_text": field.helper_text,
+        "badge": field.badge,
         "visible_when": field.visible_when,
         "disabled_when": field.disabled_when,
         "validation": field.validation,
@@ -91,6 +103,11 @@ class TaskCenterService:
         definition_list = definitions or load_task_definitions()
         self.definitions = {
             definition.template.slug: definition for definition in definition_list
+        }
+        self.seed_preset_ids = {
+            seed.id
+            for definition in definition_list
+            for seed in definition.preset_seeds
         }
         runtime_paths.ensure_runtime_layout()
         self.store = TaskCenterFileStore(state_dir or runtime_paths.get_task_center_state_dir())
@@ -168,6 +185,8 @@ class TaskCenterService:
         params: dict[str, Any],
         is_default: bool = False,
     ) -> dict[str, Any]:
+        if preset_id in self.seed_preset_ids:
+            raise ValueError("Seed presets are managed by code/config. Save as a new preset instead.")
         presets = self.store.load_presets()
         for preset in presets:
             if preset.get("id") != preset_id:
@@ -186,6 +205,8 @@ class TaskCenterService:
         raise KeyError(f"Preset not found: {preset_id}")
 
     def delete_preset(self, preset_id: str) -> bool:
+        if preset_id in self.seed_preset_ids:
+            raise ValueError("Seed presets are managed by code/config and cannot be deleted.")
         presets = self.store.load_presets()
         updated = [preset for preset in presets if preset.get("id") != preset_id]
         if len(updated) == len(presets):
@@ -249,7 +270,25 @@ class TaskCenterService:
             merged_params.update(preset.get("params", {}))
         if params:
             merged_params.update(params)
+            self._overlay_param_aliases(merged_params, params)
         return definition.normalize_params(merged_params)
+
+    @staticmethod
+    def _overlay_param_aliases(merged_params: dict[str, Any], user_params: dict[str, Any]) -> None:
+        for canonical_key, aliases in _PARAM_ALIAS_GROUPS:
+            if canonical_key in user_params:
+                canonical_value = user_params[canonical_key]
+                for alias_key in aliases:
+                    merged_params[alias_key] = canonical_value
+                continue
+            for alias_key in aliases:
+                if alias_key not in user_params:
+                    continue
+                alias_value = user_params[alias_key]
+                merged_params[canonical_key] = alias_value
+                for sibling_alias in aliases:
+                    merged_params[sibling_alias] = alias_value
+                break
 
     def _get_definition(self, slug: str) -> TaskDefinition:
         definition = self.definitions.get(slug)
@@ -274,26 +313,29 @@ class TaskCenterService:
                         "name": seed.name,
                         "params": seed.params,
                         "is_default": seed.is_default,
+                        "is_seed": True,
                         "updated_at": datetime.now().isoformat(),
                     }
                 )
         presets = self.store.ensure_seed_presets(seeds)
-
-        # One-time migration: legacy sentiment seed presets defaulted to supabase.
-        # Keep DB storage as optional, and switch seed defaults to local JSON.
+        seed_map = {seed["id"]: seed for seed in seeds}
         changed = False
-        sentiment_seed_ids = {
-            "preset_sentiment_xhs_posts_only",
-            "preset_sentiment_multi_platform",
-        }
         for preset in presets:
-            if preset.get("id") not in sentiment_seed_ids:
+            seed = seed_map.get(str(preset.get("id", "")))
+            if not seed:
                 continue
-            params = preset.get("params")
-            if not isinstance(params, dict):
-                continue
-            if params.get("save_option") == "supabase":
-                params["save_option"] = "json"
+            if (
+                preset.get("task_slug") != seed["task_slug"]
+                or preset.get("name") != seed["name"]
+                or preset.get("params") != seed["params"]
+                or preset.get("is_default") != seed["is_default"]
+                or preset.get("is_seed") is not True
+            ):
+                preset["task_slug"] = seed["task_slug"]
+                preset["name"] = seed["name"]
+                preset["params"] = seed["params"]
+                preset["is_default"] = seed["is_default"]
+                preset["is_seed"] = True
                 preset["updated_at"] = datetime.now().isoformat()
                 changed = True
 

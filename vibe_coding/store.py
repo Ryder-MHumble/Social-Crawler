@@ -12,9 +12,12 @@ Key improvements over v1:
 """
 
 import hashlib
+import os
 import re
 from typing import Dict, List, Optional
 
+import config
+from database.sqlite_storage import get_sqlite_storage
 from database.supabase_client import get_supabase
 from database.supabase_store_base import SupabaseStoreBase
 from tools import utils
@@ -48,6 +51,9 @@ class VibeCodingStore(SupabaseStoreBase):
     # ------------------------------------------------------------------
 
     async def _ensure_preloaded(self):
+        if config.SAVE_DATA_OPTION == "sqlite":
+            self._preloaded_platforms.add(self.platform)
+            return
         if self.platform in self._preloaded_platforms:
             return
         self._preloaded_platforms.add(self.platform)
@@ -176,20 +182,49 @@ class VibeCodingStore(SupabaseStoreBase):
 
         # Layer 1: in-memory content_id dedup
         await self._ensure_preloaded()
-        if content_id in self._seen_content_ids:
+        storage = get_sqlite_storage() if config.SAVE_DATA_OPTION == "sqlite" else None
+        if storage is not None:
+            storage.initialize()
+        if content_id in self._seen_content_ids or (
+            storage is not None and storage.has_content(platform=self.platform, content_id=content_id)
+        ):
             utils.logger.debug(f"[VibeCodingStore] SKIP dup content_id {self.platform}/{content_id}")
+            if storage is not None:
+                self._record_sqlite_observation(
+                    content_id=content_id,
+                    source_keyword=content_item.get("source_keyword", ""),
+                    clean_status="deduped",
+                    clean_reason="Content already exists in cleaned SQLite dataset.",
+                    rule_key="content_id_dedup",
+                    dedup_fingerprint=f"{self.platform}:{content_id}",
+                    snapshot=content_item,
+                )
             return None
 
         title = content_item.get("title", "") or ""
         description = content_item.get("description") or content_item.get("desc", "") or ""
 
         # Layer 2: title fingerprint dedup
+        fp = ""
         if vc_cfg.ENABLE_TITLE_FINGERPRINT_DEDUP:
             fp = self._title_fingerprint(title)
-            if fp and fp in VibeCodingStore._seen_title_fps:
+            if fp and (
+                fp in VibeCodingStore._seen_title_fps
+                or (storage is not None and storage.has_vibe_title_fingerprint(fp))
+            ):
                 utils.logger.debug(
                     f"[VibeCodingStore] SKIP dup title fingerprint {self.platform}/{content_id}: {title[:30]}"
                 )
+                if storage is not None:
+                    self._record_sqlite_observation(
+                        content_id=content_id,
+                        source_keyword=content_item.get("source_keyword", ""),
+                        clean_status="deduped",
+                        clean_reason="Content title fingerprint already exists in vibe dataset.",
+                        rule_key="title_fingerprint_dedup",
+                        dedup_fingerprint=fp,
+                        snapshot=content_item,
+                    )
                 return None
 
         # Layer 3: keyword scoring
@@ -198,11 +233,31 @@ class VibeCodingStore(SupabaseStoreBase):
 
         if score < 0:
             utils.logger.debug(f"[VibeCodingStore] SKIP blacklisted {self.platform}/{content_id}")
+            if storage is not None:
+                self._record_sqlite_observation(
+                    content_id=content_id,
+                    source_keyword=content_item.get("source_keyword", ""),
+                    clean_status="filtered",
+                    clean_reason="Content matched vibe blacklist terms.",
+                    rule_key="vibe_blacklist",
+                    dedup_fingerprint=f"{self.platform}:{content_id}",
+                    snapshot=content_item,
+                )
             return None
         if score < threshold:
             utils.logger.debug(
                 f"[VibeCodingStore] SKIP low score ({score}<{threshold}) {self.platform}/{content_id}"
             )
+            if storage is not None:
+                self._record_sqlite_observation(
+                    content_id=content_id,
+                    source_keyword=content_item.get("source_keyword", ""),
+                    clean_status="filtered",
+                    clean_reason=f"Vibe keyword score {score} is below threshold {threshold}.",
+                    rule_key="vibe_score_threshold",
+                    dedup_fingerprint=f"{self.platform}:{content_id}",
+                    snapshot=content_item,
+                )
             return None
 
         # Layer 4: engagement filter
@@ -214,6 +269,16 @@ class VibeCodingStore(SupabaseStoreBase):
                 f"[VibeCodingStore] SKIP low engagement ({liked}+{comments_cnt}<{min_eng}) "
                 f"{self.platform}/{content_id}"
             )
+            if storage is not None:
+                self._record_sqlite_observation(
+                    content_id=content_id,
+                    source_keyword=content_item.get("source_keyword", ""),
+                    clean_status="filtered",
+                    clean_reason=f"Vibe engagement {liked + comments_cnt} is below {min_eng}.",
+                    rule_key="vibe_engagement",
+                    dedup_fingerprint=f"{self.platform}:{content_id}",
+                    snapshot=content_item,
+                )
             return None
 
         # Passed all filters — mark seen
@@ -289,6 +354,61 @@ class VibeCodingStore(SupabaseStoreBase):
             "last_modify_ts": now_ts,
         }
 
+        if storage is not None:
+            storage.upsert_content(
+                {
+                    "platform": self.platform,
+                    "content_id": content_id,
+                    "content_type": row["content_type"],
+                    "title": title,
+                    "description": description,
+                    "content_url": content_url,
+                    "cover_url": cover_url,
+                    "user_id": row["user_id"],
+                    "nickname": row["nickname"],
+                    "avatar": row["avatar"],
+                    "ip_location": row["ip_location"],
+                    "liked_count": liked,
+                    "comment_count": comments_cnt,
+                    "share_count": row["share_count"],
+                    "collected_count": row["collected_count"],
+                    "publish_time": publish_time,
+                    "source_keyword": row["source_keyword"],
+                    "platform_payload_json": row["platform_data"],
+                }
+            )
+            storage.upsert_vibe_content_score(
+                {
+                    "run_id": self._current_run_id(),
+                    "platform": self.platform,
+                    "content_id": content_id,
+                    "score": score,
+                    "matched_keywords_json": matched_keywords,
+                    "trend_category": trend_category,
+                    "analysis_status": "pending",
+                    "top_comments_json": top_comments_json or [],
+                    "title_fingerprint": fp,
+                }
+            )
+            self._record_sqlite_observation(
+                content_id=content_id,
+                source_keyword=content_item.get("source_keyword", ""),
+                clean_status="accepted",
+                clean_reason="Content stored in vibe SQLite dataset.",
+                rule_key="accepted_vibe_content",
+                dedup_fingerprint=fp or f"{self.platform}:{content_id}",
+                snapshot={
+                    "content": row,
+                    "score": score,
+                    "matched_keywords": matched_keywords,
+                },
+            )
+            utils.logger.info(
+                f"[VibeCodingStore] SAVED {self.platform}/{content_id} "
+                f"score={score} [{trend_category}] kw={matched_keywords[:3]}"
+            )
+            return {"status": "ok"}
+
         sb = get_supabase()
         try:
             result = sb.table("vibe_coding_raw_data").upsert(row).execute()
@@ -300,6 +420,40 @@ class VibeCodingStore(SupabaseStoreBase):
         except Exception as e:
             utils.logger.error(f"[VibeCodingStore] Save failed {self.platform}/{content_id}: {e}")
             raise
+
+    def _current_run_id(self) -> str:
+        return os.getenv("SOCIAL_CRAWLER_RUN_ID", "").strip()
+
+    def _record_sqlite_observation(
+        self,
+        *,
+        content_id: str,
+        source_keyword: str,
+        clean_status: str,
+        clean_reason: str,
+        rule_key: str,
+        dedup_fingerprint: str,
+        snapshot: Dict,
+    ) -> None:
+        storage = get_sqlite_storage()
+        storage.initialize()
+        storage.record_observation(
+            {
+                "run_id": self._current_run_id(),
+                "task_slug": os.getenv("SOCIAL_CRAWLER_TASK_SLUG", "").strip(),
+                "stage_key": os.getenv("SOCIAL_CRAWLER_STAGE_KEY", "").strip(),
+                "job_key": os.getenv("SOCIAL_CRAWLER_JOB_KEY", "").strip(),
+                "entity_type": "content",
+                "platform": self.platform,
+                "external_id": content_id,
+                "source_keyword": source_keyword,
+                "clean_status": clean_status,
+                "clean_reason": clean_reason,
+                "rule_key": rule_key,
+                "dedup_fingerprint": dedup_fingerprint,
+                "snapshot_json": snapshot,
+            }
+        )
 
     # ------------------------------------------------------------------
     # Analysis helpers (called by OpenClaw pipeline)

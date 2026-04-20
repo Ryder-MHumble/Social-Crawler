@@ -1,6 +1,8 @@
 [project]
 name = "mediacrawler"
-author = "程序员阿江-Relakkes <relakkes@gmail.com>"
+authors = [
+    { name = "程序员阿江-Relakkes", email = "relakkes@gmail.com" },
+]
 version = "0.1.0"
 description = "A social media crawler project, support Xiaohongshu, Weibo, Zhihu, Bilibili, Douyin, BaiduTieBa etc."
 readme = "README.md"
@@ -23,6 +25,7 @@ dependencies = [
     "pillow==9.5.0",
     "playwright==1.45.0",
     "pydantic==2.5.2",
+    "pyyaml>=6.0.1",
     "pyexecjs==1.5.1",
     "pyhumps>=3.8.0",
     "python-dotenv==1.0.1",
@@ -40,6 +43,25 @@ dependencies = [
     "websockets>=15.0.1",
     "asyncpg>=0.31.0",
     "supabase>=2.0.0",
+]
+
+[tool.setuptools.packages.find]
+include = [
+    "api*",
+    "apps*",
+    "base*",
+    "cache*",
+    "cmd_arg*",
+    "config*",
+    "constant*",
+    "database*",
+    "media_platform*",
+    "model*",
+    "proxy*",
+    "store*",
+    "tasks*",
+    "tools*",
+    "vibe_coding*",
 ]
 
 [[tool.uv.index]]

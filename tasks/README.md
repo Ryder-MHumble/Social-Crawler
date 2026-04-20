@@ -1,6 +1,6 @@
-# Unified Task Layout
+# Task Layout
 
-This project now has a unified task directory under `tasks/`:
+The task entrypoints now live under `tasks/`:
 
 ```text
 tasks/
@@ -42,10 +42,9 @@ run_crawl.cmd vibe_coding
 
 ## Notes
 
-- Running without parameters opens the interactive menu and numeric selection.
-- Every task uses the same runtime framework:
+- Running without parameters opens the interactive menu.
+- All tasks use the same runtime shell:
   - task-specific welcome page
-  - live progress dashboard
-  - unified final result summary
-- Logs are written to:
-  - `runtime/logs/task_runs/<timestamp>_<task>/`
+  - live progress view
+  - final summary
+- Logs are written to `runtime/logs/task_runs/<timestamp>_<task>/`.

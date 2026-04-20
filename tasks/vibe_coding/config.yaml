@@ -1,0 +1,113 @@
+defaults:
+  platforms:
+    - xhs
+    - bili
+  keyword_groups:
+    - vibe_tools_core
+    - vibe_workflows
+    - vibe_business
+  enable_keyword_search: true
+  keyword_whitelist: []
+  keyword_blacklist: []
+  max_notes_count: 20
+  enable_comments: false
+  enable_sub_comments: false
+  max_comments_count_singlenotes: 20
+  enable_account_crawl: false
+  specified_account_ids: []
+  account_whitelist: []
+  account_blacklist: []
+  login_type: qrcode
+  save_option: json
+  headless: false
+
+monitoring:
+  supported_platforms:
+    - xhs
+    - bili
+    - dy
+    - wb
+  keyword_groups:
+    vibe_tools_core:
+      - cursor ai编程
+      - claude code开发
+      - github copilot实战
+      - windsurf ide
+      - bolt.new做网站
+      - v0.dev教程
+      - lovable ai
+      - devin ai
+      - manus ai
+    vibe_workflows:
+      - vibe coding
+      - ai编程实战
+      - 用ai做独立产品
+      - 零基础ai开发
+      - ai辅助编程
+      - ai代码生成
+      - ai全栈开发
+    vibe_business:
+      - ai副业项目
+      - 独立开发 ai
+      - 一人公司 ai
+      - ai做 saas
+      - ai做网站接单
+      - ai做产品变现
+    vibe_compare:
+      - cursor vs copilot
+      - windsurf vs cursor
+      - bolt vs v0
+      - lovable vs bolt
+      - ai编程工具推荐
+      - ai编程工具对比
+  keyword_defaults:
+    whitelist: []
+    blacklist: []
+  account_defaults:
+    specified_account_ids: []
+    whitelist: []
+    blacklist: []
+  presets:
+    - id: xhs_bili_default
+      name: Vibe Radar-双平台默认版
+      platforms:
+        - xhs
+        - bili
+      keyword_groups:
+        - vibe_tools_core
+        - vibe_workflows
+        - vibe_business
+      max_notes_count: 20
+      enable_comments: false
+      enable_sub_comments: false
+      max_comments_count_singlenotes: 20
+      save_option: json
+      is_default: true
+    - id: tool_compare
+      name: Vibe Radar-工具横评
+      platforms:
+        - xhs
+        - bili
+      keyword_groups:
+        - vibe_compare
+      max_notes_count: 18
+      enable_comments: true
+      enable_sub_comments: false
+      max_comments_count_singlenotes: 15
+      save_option: json
+      is_default: false
+    - id: business_cases
+      name: Vibe Radar-案例与变现
+      platforms:
+        - xhs
+        - bili
+        - dy
+      keyword_groups:
+        - vibe_workflows
+        - vibe_business
+      max_notes_count: 24
+      enable_comments: true
+      enable_sub_comments: false
+      max_comments_count_singlenotes: 20
+      save_option: json
+      is_default: false

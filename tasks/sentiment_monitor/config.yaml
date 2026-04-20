@@ -1,0 +1,97 @@
+defaults:
+  platforms:
+    - xhs
+  keyword_groups:
+    - zgca_core
+    - guozhi_linkage
+    - zgca_risk
+    - zgca_scenario
+  enable_keyword_search: true
+  keyword_whitelist: []
+  keyword_blacklist: []
+  max_notes_count: 30
+  top_posts_count: 30
+  enable_comments: false
+  enable_sub_comments: false
+  max_comments_count_singlenotes: 20
+  top_comments_count: 20
+  enable_account_crawl: false
+  specified_account_ids: []
+  account_whitelist: []
+  account_blacklist: []
+  login_type: qrcode
+  save_option: json
+  headless: false
+
+media_daily:
+  supported_platforms:
+    - xhs
+    - wb
+    - dy
+  keyword_groups:
+    zgca_core:
+      - 北京中关村学院
+      - 中关村学院
+      - 北京中关村学院招生
+      - 北京中关村学院夏令营
+      - 北京中关村学院博士生
+    guozhi_linkage:
+      - 中关村人工智能研究院
+      - 刘铁岩
+      - 邵斌
+      - 深圳河套
+      - 上海创智
+    zgca_risk:
+      - 北京中关村学院 避雷
+      - 中关村学院 坑
+      - 中关村学院 骗
+      - 中关村学院 水
+      - 中关村学院 垃圾
+      - 中关村学院 投诉
+      - 中关村学院 举报
+      - 中关村学院 维权
+      - 中关村学院 内定
+      - 中关村学院 不公平
+      - 中关村学院 黑幕
+      - 中关村学院 退学
+      - 中关村学院 劝退
+      - 中关村学院 毕业
+      - 中关村学院 师资差
+      - 中关村学院 导师不负责
+      - 中关村学院 招生黑幕
+      - 中关村学院 夏令营 不公平
+    zgca_scenario:
+      - 北京中关村学院 怎么样
+      - 中关村学院 值得去吗
+      - 中关村学院 博士
+      - 中关村学院 博士生
+      - 中关村学院 直博
+      - 中关村学院 夏令营
+      - 中关村学院 招生
+      - 中关村学院 宣讲
+      - 中关村学院 面试
+      - 中关村学院 考核
+      - 中关村学院 毕业去向
+      - 中关村学院 就业
+      - 中关村学院 孵化
+      - 中关村学院 创业
+      - 中关村学院 融资
+      - 中关村学院 对比
+      - 中关村学院 vs
+      - 中关村学院 不如
+      - 中关村学院 野鸡
+      - 中关村学院 骗子
+  guozhi_risk_suffixes:
+    - 投诉
+    - 举报
+    - 维权
+    - 不公平
+    - 黑幕
+    - 争议
+  keyword_defaults:
+    whitelist: []
+    blacklist: []
+  account_defaults:
+    specified_account_ids: []
+    whitelist: []
+    blacklist: []

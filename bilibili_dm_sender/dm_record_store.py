@@ -1,30 +1,64 @@
 #!/usr/bin/env python3
-"""
-B站私信发送记录 - Supabase存储
-"""
+"""Bilibili DM delivery records backed by the unified SQLite storage."""
+
+from __future__ import annotations
 
 import os
 import sys
 from datetime import datetime
-from supabase import create_client, Client
 from typing import Optional
 
-# 添加项目根目录到路径
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
-from config.base_config import SUPABASE_URL, SUPABASE_KEY
+from database.sqlite_storage import get_sqlite_storage
 
 
 class DMRecordStore:
-    """私信发送记录存储"""
+    """Persist outreach delivery attempts into SQLite."""
 
-    def __init__(self):
-        """初始化Supabase客户端"""
-        if not SUPABASE_URL or not SUPABASE_KEY:
-            raise ValueError("请在 config/base_config.py 中配置 SUPABASE_URL 和 SUPABASE_KEY")
+    def __init__(self) -> None:
+        self.storage = get_sqlite_storage()
+        self.storage.initialize()
 
-        self.client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        self.table_name = "bilibili_dm_records"
+    @staticmethod
+    def _current_run_id() -> str:
+        return os.getenv("SOCIAL_CRAWLER_RUN_ID", "").strip()
+
+    def _count_deliveries(self, campaign: str, status: str) -> int:
+        with self.storage._lock:
+            with self.storage._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM outreach_deliveries
+                    WHERE campaign_name = ? AND platform = 'bili' AND status = ?
+                    """,
+                    (campaign, status),
+                ).fetchone()
+        return int(row["count"]) if row else 0
+
+    def _list_deliveries(self, campaign: str, status: str) -> list[dict]:
+        with self.storage._lock:
+            with self.storage._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT creator_id, creator_name, error_message
+                    FROM outreach_deliveries
+                    WHERE campaign_name = ? AND platform = 'bili' AND status = ?
+                    ORDER BY sent_at DESC
+                    """,
+                    (campaign, status),
+                ).fetchall()
+        return [
+            {
+                "user_id": row["creator_id"],
+                "username": row["creator_name"],
+                "error_msg": row["error_message"],
+            }
+            for row in rows
+        ]
 
     def save_dm_record(
         self,
@@ -32,100 +66,70 @@ class DMRecordStore:
         username: str,
         message: str,
         status: str,
-        error_msg: Optional[str] = None
+        error_msg: Optional[str] = None,
+        campaign: str = "openclaw_2026",
+        message_template_id: str = "",
+        run_id: Optional[str] = None,
+        attempt_no: Optional[int] = None,
     ) -> bool:
-        """
-        保存私信发送记录
-
-        Args:
-            user_id: B站用户ID
-            username: 用户名
-            message: 发送的消息内容
-            status: 发送状态 (success/failed)
-            error_msg: 错误信息（如果失败）
-
-        Returns:
-            bool: 是否保存成功
-        """
         try:
-            data = {
-                "user_id": user_id,
-                "username": username,
-                "message": message,
-                "status": status,
-                "error_msg": error_msg,
-                "sent_at": datetime.now().isoformat(),
-                "campaign": "openclaw_2026"  # 活动标识
-            }
-
-            result = self.client.table(self.table_name).insert(data).execute()
-
-            if result.data:
-                print(f"✅ 已记录到数据库: {username} - {status}")
-                return True
-            else:
-                print(f"⚠️  数据库记录失败: {username}")
-                return False
-
-        except Exception as e:
-            print(f"❌ 数据库错误: {str(e)}")
+            resolved_attempt = attempt_no or self.storage.get_next_outreach_attempt(
+                campaign_name=campaign,
+                platform="bili",
+                creator_id=user_id,
+            )
+            self.storage.record_outreach_delivery(
+                {
+                    "campaign_name": campaign,
+                    "run_id": run_id or self._current_run_id(),
+                    "platform": "bili",
+                    "creator_id": user_id,
+                    "creator_name": username,
+                    "message_template_id": message_template_id,
+                    "message_body": message,
+                    "status": status,
+                    "error_message": error_msg or "",
+                    "attempt_no": resolved_attempt,
+                    "sent_at": datetime.now().isoformat(),
+                }
+            )
+            print(f"已记录到 SQLite: {username} - {status}")
+            return True
+        except Exception as exc:
+            print(f"数据库错误: {exc}")
             return False
 
     def get_sent_count(self, campaign: str = "openclaw_2026") -> int:
-        """获取已发送数量"""
         try:
-            result = self.client.table(self.table_name)\
-                .select("*", count="exact")\
-                .eq("campaign", campaign)\
-                .eq("status", "success")\
-                .execute()
-
-            return result.count if hasattr(result, 'count') else 0
-
-        except Exception as e:
-            print(f"❌ 查询错误: {str(e)}")
+            return self._count_deliveries(campaign, "success")
+        except Exception as exc:
+            print(f"查询错误: {exc}")
             return 0
 
     def get_failed_users(self, campaign: str = "openclaw_2026") -> list:
-        """获取发送失败的用户列表"""
         try:
-            result = self.client.table(self.table_name)\
-                .select("user_id, username, error_msg")\
-                .eq("campaign", campaign)\
-                .eq("status", "failed")\
-                .execute()
-
-            return result.data if result.data else []
-
-        except Exception as e:
-            print(f"❌ 查询错误: {str(e)}")
+            return self._list_deliveries(campaign, "failed")
+        except Exception as exc:
+            print(f"查询错误: {exc}")
             return []
 
     def is_already_sent(self, user_id: str, campaign: str = "openclaw_2026") -> bool:
-        """检查是否已经发送过"""
         try:
-            result = self.client.table(self.table_name)\
-                .select("user_id")\
-                .eq("campaign", campaign)\
-                .eq("user_id", user_id)\
-                .eq("status", "success")\
-                .execute()
-
-            return len(result.data) > 0 if result.data else False
-
-        except Exception as e:
-            print(f"❌ 查询错误: {str(e)}")
+            return self.storage.has_successful_delivery(
+                campaign_name=campaign,
+                platform="bili",
+                creator_id=user_id,
+            )
+        except Exception as exc:
+            print(f"查询错误: {exc}")
             return False
 
 
 if __name__ == "__main__":
-    # 测试
     store = DMRecordStore()
-
-    print(f"📊 已成功发送: {store.get_sent_count()} 条")
-
+    print(f"已成功发送: {store.get_sent_count()} 条")
     failed = store.get_failed_users()
     if failed:
-        print(f"\n❌ 发送失败: {len(failed)} 个用户")
+        print(f"\n发送失败: {len(failed)} 个用户")
         for user in failed[:5]:
             print(f"  - {user['username']}: {user['error_msg']}")

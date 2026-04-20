@@ -1,6 +1,6 @@
 ﻿# Social-Crawler
 
-一个基于 Playwright/CDP 的社交平台采集项目，已升级为“任务中心 + API/WebUI + 兼容旧入口”的统一运行架构。
+一个基于 Playwright/CDP 的社交平台采集项目。现在的主入口是任务中心，同时保留了 API、WebUI 和旧脚本入口。
 
 ## 支持平台
 
@@ -12,13 +12,13 @@
 - `tieba` 百度贴吧
 - `zhihu` 知乎
 
-## 当前可运行任务
+## 当前任务
 
 - `sentiment_monitor`: 多平台关键词舆情采集
 - `creator_outreach`: 创作者发现与外联流程
 - `vibe_coding`: 编程趋势采集任务
 
-## 架构总览
+## 目录关系
 
 ```text
 run_crawl.sh/.ps1/.cmd (兼容入口)
@@ -57,7 +57,7 @@ npm ci
 
 ## 配置 `.env`
 
-复制 `.env.example` 到 `.env`，至少配置以下项：
+先把 `.env.example` 复制成 `.env`。常见的必填项如下：
 
 ```env
 # Redis（代理池/缓存相关能力需要）
@@ -80,15 +80,15 @@ jisu_key=
 jisu_crypto=
 ```
 
-说明：
+补充说明：
 - 配置来源优先级：默认 `config/*` < `.env` < CLI 参数。
 - 代理功能依赖 Redis。
 
-## 运行方式
+## 运行
 
-### 1) 任务中心 CLI（推荐）
+### 1) 任务中心 CLI
 
-不带参数时进入交互式菜单。
+不带参数时会进入交互式菜单。
 
 ```bash
 # macOS / Linux
@@ -114,9 +114,9 @@ run_crawl.cmd --list
 run_crawl.cmd sentiment_monitor
 ```
 
-### 2) 兼容旧单平台入口
+### 2) 旧单平台入口
 
-仍可直接调用 `main.py`（兼容模式）：
+如果你还在用旧方式，也可以直接调用 `main.py`：
 
 ```bash
 uv run main.py --platform xhs --lt qrcode --type search \
@@ -129,7 +129,7 @@ uv run main.py --platform xhs --lt qrcode --type search \
 - `--type`: `search|detail|creator`
 - `--save_data_option`: `json|csv|excel|sqlite|db|mongodb|supabase`
 
-## 启动 API + WebUI
+## 启动 API 和 WebUI
 
 ### 开发模式
 
@@ -147,11 +147,11 @@ uv run main.py --platform xhs --lt qrcode --type search \
 ./start_prod_server.sh
 ```
 
-该脚本会先构建前端，再启动 `uvicorn apps.api.serve:app`。
+脚本会先构建前端，再启动 `uvicorn apps.api.serve:app`。
 
 ## API 速查
 
-基础：
+基础接口：
 - `GET /api/health`
 - `GET /api/env/check`
 
@@ -184,7 +184,7 @@ WebSocket：
 - `WS /api/ws/status`
 - `WS /api/ws/runs/active`
 
-## 数据与运行目录
+## 运行目录
 
 默认运行目录在 `runtime/`：
 - `runtime/data`: 采集数据
@@ -193,13 +193,13 @@ WebSocket：
 - `runtime/task_center_state`: 任务中心状态（预设/运行记录）
 - `runtime/webui`: 前端构建产物
 
-可通过环境变量覆盖：
+下面这些环境变量可以覆盖默认路径：
 - `SOCIAL_CRAWLER_RUNTIME_DIR`
 - `SOCIAL_CRAWLER_DATA_DIR`
 - `SOCIAL_CRAWLER_BROWSER_DATA_DIR`
 - `SOCIAL_CRAWLER_WEBUI_DIR`
 
-## 测试与质量
+## 测试
 
 ```bash
 # 默认执行 tests 下非 external 用例
@@ -212,14 +212,14 @@ uv run pytest tests/unit
 uv run pytest tests/integration
 ```
 
-仓库还提供：
+仓库里还带了几项辅助工具：
 - `pre-commit`（基础质量钩子）
 - `mypy.ini`（类型检查配置）
 - `scripts/verification/*`（如 Supabase 连通性校验）
 
-## 兼容性说明
+## 兼容性
 
-- `run_crawl.sh/.ps1/.cmd` 与 `main.py` 会打印 `[Deprecated Entry]`，表示它们是兼容入口。
+- `run_crawl.sh/.ps1/.cmd` 和 `main.py` 会打印 `[Deprecated Entry]`，表示它们仍可用，但已经不是主入口。
 - 新功能优先围绕 `tasks/`、`api/`、`frontend/task_center/` 演进。
 
 ## 合规与许可

@@ -31,6 +31,7 @@ if str(project_root) not in sys.path:
 
 from tools import utils
 from database.db_session import create_tables
+from database.sqlite_storage import get_sqlite_storage
 
 async def init_table_schema(db_type: str):
     """
@@ -45,6 +46,8 @@ async def init_table_schema(db_type: str):
 
 async def init_db(db_type: str = None):
     await init_table_schema(db_type)
+    if (db_type or "").lower() == "sqlite":
+        get_sqlite_storage().initialize()
 
 async def close():
     """

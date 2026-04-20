@@ -203,7 +203,10 @@ class DouyinJsonStoreImplement(AbstractStore):
 
 
 
-class DouyinSqliteStoreImplement(DouyinDbStoreImplement):
+from store.sqlite_store_impl import UnifiedDouyinSqliteStoreImplement
+
+
+class DouyinSqliteStoreImplement(UnifiedDouyinSqliteStoreImplement):
     pass
 
 

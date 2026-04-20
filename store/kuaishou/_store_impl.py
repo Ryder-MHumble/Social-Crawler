@@ -166,9 +166,11 @@ class KuaishouJsonStoreImplement(AbstractStore):
         pass
 
 
-class KuaishouSqliteStoreImplement(KuaishouDbStoreImplement):
-    async def store_creator(self, creator: Dict):
-        pass
+from store.sqlite_store_impl import UnifiedKuaishouSqliteStoreImplement
+
+
+class KuaishouSqliteStoreImplement(UnifiedKuaishouSqliteStoreImplement):
+    pass
 
 
 class KuaishouMongoStoreImplement(AbstractStore):

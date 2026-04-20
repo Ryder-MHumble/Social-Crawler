@@ -20,6 +20,11 @@ class TaskFieldResponse(BaseModel):
     group: str = "General"
     required: bool = False
     options: list[TaskFieldOptionResponse] = Field(default_factory=list)
+    placeholder: str = ""
+    rows: int | None = None
+    layout: str = "default"
+    helper_text: str = ""
+    badge: str = ""
     visible_when: dict[str, Any] | None = None
     disabled_when: dict[str, Any] | None = None
     validation: dict[str, Any] | None = None
@@ -45,6 +50,12 @@ class TaskJobResponse(BaseModel):
     exit_code: int | None = None
     line_count: int | None = None
     last_line: str | None = None
+    pid: int | None = None
+    last_output_at: str | None = None
+    last_state_change_at: str | None = None
+    watchdog_status: str | None = None
+    stall_deadline_at: str | None = None
+    termination_reason: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
 
@@ -107,6 +118,7 @@ class TaskRunResponse(BaseModel):
     started_at: str | None = None
     finished_at: str | None = None
     log_path: str | None = None
+    metrics: dict[str, int] = Field(default_factory=dict)
     stages: list[TaskStageResponse] = Field(default_factory=list)
 
 

@@ -1,4 +1,11 @@
 import type {
+  EnvCheckResult,
+  SqliteRow,
+  SqliteRowFilters,
+  SqliteRowsResponse,
+  SqliteStats,
+  SqliteStatus,
+  SqliteTablesPayload,
   TaskLogEntry,
   TaskPreset,
   TaskPreview,
@@ -21,7 +28,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       const payload = await response.json();
       detail = payload.detail ?? payload.message ?? detail;
     } catch {
-      // ignore json parsing failure
+      // ignore invalid json
     }
     throw new Error(detail || "Request failed");
   }
@@ -40,6 +47,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     }
     throw new Error(`Unexpected response type: ${contentType || "unknown"}`);
   }
+
   return (await response.json()) as T;
 }
 
@@ -120,10 +128,52 @@ export async function stopActiveRun(): Promise<TaskRun> {
 }
 
 export async function fetchRunLogs(runId: string, limit = 200): Promise<TaskLogEntry[]> {
-  const payload = await request<{ logs: TaskLogEntry[] }>(
-    `/runs/${runId}/logs?limit=${limit}`,
-  );
+  const payload = await request<{ logs: TaskLogEntry[] }>(`/runs/${runId}/logs?limit=${limit}`);
   return payload.logs;
+}
+
+export async function fetchSqliteStatus(): Promise<SqliteStatus> {
+  return request<SqliteStatus>("/storage/sqlite/status");
+}
+
+export async function initSqlite(): Promise<SqliteStatus> {
+  return request<SqliteStatus>("/storage/sqlite/init", { method: "POST" });
+}
+
+export async function fetchSqliteStats(
+  filters: Partial<Pick<SqliteRowFilters, "table" | "run_id" | "task_slug" | "platform" | "entity_type" | "clean_status" | "q">> = {},
+): Promise<SqliteStats> {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") {
+      params.set(key, String(value));
+    }
+  });
+  return request<SqliteStats>(`/data/sqlite/stats${params.toString() ? `?${params.toString()}` : ""}`);
+}
+
+export async function fetchSqliteTables(): Promise<SqliteTablesPayload> {
+  return request<SqliteTablesPayload>("/data/sqlite/tables");
+}
+
+export async function fetchSqliteRows(filters: SqliteRowFilters): Promise<SqliteRowsResponse> {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") {
+      params.set(key, String(value));
+    }
+  });
+  return request<SqliteRowsResponse>(`/data/sqlite/rows?${params.toString()}`);
+}
+
+export async function fetchSqliteRow(table: string, rowId: number): Promise<SqliteRow> {
+  return request<SqliteRow>(
+    `/data/sqlite/row?table=${encodeURIComponent(table)}&row_id=${encodeURIComponent(String(rowId))}`,
+  );
+}
+
+export async function fetchEnvCheck(): Promise<EnvCheckResult> {
+  return request<EnvCheckResult>("/env/check");
 }
 
 export function activeRunSocketUrl(): string {

@@ -27,40 +27,22 @@ class AbstractCrawler(ABC):
 
     @abstractmethod
     async def start(self):
-        """
-        start crawler
-        """
+        """Start the crawler."""
         pass
 
     @abstractmethod
     async def search(self):
-        """
-        search
-        """
+        """Run the search flow."""
         pass
 
     @abstractmethod
     async def launch_browser(self, chromium: BrowserType, playwright_proxy: Optional[Dict], user_agent: Optional[str], headless: bool = True) -> BrowserContext:
-        """
-        launch browser
-        :param chromium: chromium browser
-        :param playwright_proxy: playwright proxy
-        :param user_agent: user agent
-        :param headless: headless mode
-        :return: browser context
-        """
+        """Launch a browser context."""
         pass
 
     async def launch_browser_with_cdp(self, playwright: Playwright, playwright_proxy: Optional[Dict], user_agent: Optional[str], headless: bool = True) -> BrowserContext:
-        """
-        Launch browser using CDP mode (optional implementation)
-        :param playwright: playwright instance
-        :param playwright_proxy: playwright proxy configuration
-        :param user_agent: user agent
-        :param headless: headless mode
-        :return: browser context
-        """
-        # Default implementation: fallback to standard mode
+        """Launch a browser context through CDP when a crawler supports it."""
+        # Default behavior falls back to the regular browser launcher.
         return await self.launch_browser(playwright.chromium, playwright_proxy, user_agent, headless)
 
 
@@ -93,24 +75,21 @@ class AbstractStore(ABC):
     async def store_comment(self, comment_item: Dict):
         pass
 
-    # TODO support all platform
-    # only xhs is supported, so @abstractmethod is commented
+    # Not every platform implements creator storage yet.
     @abstractmethod
     async def store_creator(self, creator: Dict):
         pass
 
 
 class AbstractStoreImage(ABC):
-    # TODO: support all platform
-    # only weibo is supported
+    # Image storage is only implemented for a subset of platforms.
     # @abstractmethod
     async def store_image(self, image_content_item: Dict):
         pass
 
 
 class AbstractStoreVideo(ABC):
-    # TODO: support all platform
-    # only weibo is supported
+    # Video storage is only implemented for a subset of platforms.
     # @abstractmethod
     async def store_video(self, video_content_item: Dict):
         pass

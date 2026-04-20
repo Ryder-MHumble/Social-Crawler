@@ -20,6 +20,7 @@ import asyncio
 import subprocess
 import signal
 import os
+import sys
 from typing import Optional, List
 from datetime import datetime
 from tools import runtime_paths
@@ -204,7 +205,7 @@ class CrawlerManager:
 
     def _build_command(self, config: CrawlerStartRequest) -> list:
         """Build main.py command line arguments"""
-        cmd = ["uv", "run", "python", "apps/crawler/run_main.py"]
+        cmd = [sys.executable, "apps/crawler/run_main.py"]
 
         cmd.extend(["--platform", config.platform.value])
         cmd.extend(["--lt", config.login_type.value])

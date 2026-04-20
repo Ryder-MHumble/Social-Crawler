@@ -337,7 +337,10 @@ class BiliJsonStoreImplement(AbstractStore):
 
 
 
-class BiliSqliteStoreImplement(BiliDbStoreImplement):
+from store.sqlite_store_impl import UnifiedBiliSqliteStoreImplement
+
+
+class BiliSqliteStoreImplement(UnifiedBiliSqliteStoreImplement):
     pass
 
 

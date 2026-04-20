@@ -225,10 +225,12 @@ class WeiboJsonStoreImplement(AbstractStore):
         await self.writer.write_single_item_to_json(item_type="creators", item=creator)
 
 
-class WeiboSqliteStoreImplement(WeiboDbStoreImplement):
-    """
-    Weibo content SQLite storage implementation
-    """
+from store.sqlite_store_impl import UnifiedWeiboSqliteStoreImplement
+
+
+class WeiboSqliteStoreImplement(UnifiedWeiboSqliteStoreImplement):
+    """Unified SQLite store for cleaned Weibo data."""
+
     pass
 
 

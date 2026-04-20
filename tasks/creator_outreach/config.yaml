@@ -1,0 +1,90 @@
+defaults:
+  run_discovery: true
+  run_filter: true
+  run_dm: false
+  discovery_keywords:
+    - openclaw教程
+    - openclaw使用
+    - openclaw
+    - 小龙虾编程
+  seed_creator_ids: []
+  max_pages_per_keyword: 3
+  max_videos_per_creator: 20
+  creator_whitelist: []
+  creator_blacklist: []
+  min_fans_count: 0
+  max_fans_count: 0
+  min_total_play_count: 1000
+  min_total_comment_count: 0
+  min_total_favorite_count: 0
+  min_video_count: 1
+  include_profile_keywords:
+    - ai
+    - 人工智能
+    - agent
+    - mcp
+    - 龙虾
+    - openclaw
+  exclude_profile_keywords: []
+  include_video_keywords:
+    - ai
+    - agent
+    - mcp
+    - openclaw
+    - 龙虾
+    - claude
+    - cursor
+    - copilot
+  exclude_video_keywords:
+    - 吃小龙虾
+    - 麻辣小龙虾
+    - 口味虾
+    - 选股
+    - 直播切片
+  message_template_mode: template
+  message_template_id: template_openclaw_invite
+  custom_message_template: ""
+  campaign_name: openclaw_2026
+  max_dm_targets: 50
+  concurrent_tabs: 5
+  batch_delay_seconds: 10
+  dry_run: true
+
+templates:
+  - id: template_openclaw_invite
+    name: OpenClaw 活动邀约
+    description: 适合首轮触达 AI 创作者、教程作者和工具体验类达人。
+    message: |
+      hihi你好呀，抱歉打扰啦，我是北京中关村学院的研究员，看到你主页分享了很多OpenClaw的落地应用，想邀请你参加我们举办的龙虾大赛。
+
+      中关村学院“OpenClaw”比赛分学术 / 生产力 / 生活龙虾三条赛道，全场最佳奖金 20 万 + 100 亿 Token，每条赛道 10 个获奖名额。
+
+      报名很简单：上传链接讲清楚你的虾能做什么即可，不用交代码，核心看实际应用效果，结合硬件会加分。
+
+      报名：https://claw.lab.bza.edu.cn
+      详情：https://mp.weixin.qq.com/s/RfqXfunmEP1NLIln-9YUvQ
+  - id: template_product_demo
+    name: 产品体验邀约
+    description: 适合邀请达人体验产品、反馈功能、录制 demo。
+    message: |
+      你好，我这边在做一款 AI 编程 / Agent 方向的新产品，看到你平时会持续分享这类工具和实践，想邀请你提前体验一版。
+
+      如果你有兴趣，我们可以直接把体验名额、素材包和可公开的信息发给你，也欢迎你给我们提最直接的改进意见。
+
+presets:
+  - id: discovery_only
+    name: 创作者发现-不发私信
+    params:
+      run_discovery: true
+      run_filter: true
+      run_dm: false
+    is_default: true
+  - id: campaign_dry_run
+    name: Campaign 干跑检查
+    params:
+      run_discovery: false
+      run_filter: true
+      run_dm: true
+      dry_run: true
+      campaign_name: openclaw_dryrun
+    is_default: false

@@ -22,9 +22,15 @@ class TaskCenterFileStore:
 
     def ensure_seed_presets(self, seeds: list[dict[str, Any]]) -> list[dict[str, Any]]:
         with self._lock:
-            presets = self._load_json_list(self.presets_path)
+            seed_ids = {seed["id"] for seed in seeds}
+            original_presets = self._load_json_list(self.presets_path)
+            presets = [
+                preset
+                for preset in original_presets
+                if not (preset.get("is_seed") is True and preset.get("id") not in seed_ids)
+            ]
             existing_ids = {preset["id"] for preset in presets}
-            changed = False
+            changed = len(presets) != len(original_presets)
             for seed in seeds:
                 if seed["id"] not in existing_ids:
                     presets.append(seed)

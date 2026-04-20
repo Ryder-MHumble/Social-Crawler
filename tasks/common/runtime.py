@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -11,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from database.sqlite_storage import WATCHDOG_DEFAULTS, get_sqlite_storage
 from tasks.common.models import TaskJob, TaskSpec, TaskStage
 
 RuntimeEventHandler = Callable[[dict[str, Any]], None]
@@ -26,6 +28,12 @@ class JobRuntime:
     exit_code: Optional[int] = None
     line_count: int = 0
     last_line: str = ""
+    last_output_at: Optional[float] = None
+    last_state_change_at: Optional[float] = None
+    watchdog_status: str = "idle"
+    stall_deadline_at: Optional[float] = None
+    termination_reason: str = ""
+    termination_requested_at: Optional[float] = None
     process: Optional[subprocess.Popen] = None
     reader_thread: Optional[threading.Thread] = None
     log_fp: Optional[object] = None
@@ -61,6 +69,13 @@ def generate_run_id(prefix: str = "run") -> str:
 
 
 def serialize_run_context(context: TaskRunContext) -> dict[str, Any]:
+    sqlite_metrics = get_sqlite_storage().get_run_metrics(context.run_id)
+    stalled_jobs = sum(
+        1
+        for stage_runtime in context.stages
+        for job_runtime in stage_runtime.jobs
+        if job_runtime.termination_reason
+    )
     return {
         "id": context.run_id,
         "task_slug": context.task.slug,
@@ -75,6 +90,10 @@ def serialize_run_context(context: TaskRunContext) -> dict[str, Any]:
             else None
         ),
         "log_path": str(context.log_stream_path),
+        "metrics": {
+            **sqlite_metrics,
+            "stalled_jobs": stalled_jobs,
+        },
         "stages": [
             {
                 "key": runtime.stage.key,
@@ -93,6 +112,24 @@ def serialize_run_context(context: TaskRunContext) -> dict[str, Any]:
                         "exit_code": job_runtime.exit_code,
                         "line_count": job_runtime.line_count,
                         "last_line": job_runtime.last_line,
+                        "pid": job_runtime.process.pid if job_runtime.process else None,
+                        "last_output_at": (
+                            datetime.fromtimestamp(job_runtime.last_output_at).isoformat()
+                            if job_runtime.last_output_at
+                            else None
+                        ),
+                        "last_state_change_at": (
+                            datetime.fromtimestamp(job_runtime.last_state_change_at).isoformat()
+                            if job_runtime.last_state_change_at
+                            else None
+                        ),
+                        "watchdog_status": job_runtime.watchdog_status,
+                        "stall_deadline_at": (
+                            datetime.fromtimestamp(job_runtime.stall_deadline_at).isoformat()
+                            if job_runtime.stall_deadline_at
+                            else None
+                        ),
+                        "termination_reason": job_runtime.termination_reason or None,
                         "started_at": (
                             datetime.fromtimestamp(job_runtime.started_at).isoformat()
                             if job_runtime.started_at
@@ -118,9 +155,15 @@ class TaskRuntimeExecutor:
         project_root: Path,
         refresh_seconds: float = 1.0,
         logs_root: Path | None = None,
+        job_start_timeout_sec: int | None = None,
+        job_stall_timeout_sec: int | None = None,
+        terminate_grace_sec: int | None = None,
     ) -> None:
         self.project_root = project_root
         self.refresh_seconds = refresh_seconds
+        self.job_start_timeout_sec = int(job_start_timeout_sec or WATCHDOG_DEFAULTS["job_start_timeout_sec"])
+        self.job_stall_timeout_sec = int(job_stall_timeout_sec or WATCHDOG_DEFAULTS["job_stall_timeout_sec"])
+        self.terminate_grace_sec = int(terminate_grace_sec or WATCHDOG_DEFAULTS["terminate_grace_sec"])
         self.logs_root = logs_root or (project_root / "logs" / "task_runs")
         self.logs_root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
@@ -266,6 +309,7 @@ class TaskRuntimeExecutor:
                     if stop_event.is_set():
                         break
 
+                    self._tick_watchdog(context, stage_runtime, runtime, event_handler)
                     code = runtime.process.poll()
                     if code is None:
                         running_count += 1
@@ -273,7 +317,13 @@ class TaskRuntimeExecutor:
 
                     runtime.exit_code = code
                     runtime.finished_at = time.time()
-                    runtime.status = "success" if code == 0 else "failed"
+                    runtime.last_state_change_at = runtime.finished_at
+                    if runtime.termination_reason:
+                        runtime.status = "failed"
+                        runtime.watchdog_status = "terminated"
+                    else:
+                        runtime.status = "success" if code == 0 else "failed"
+                        runtime.watchdog_status = "completed"
 
                 if stop_event.is_set():
                     self._terminate_running_jobs([stage_runtime])
@@ -311,19 +361,31 @@ class TaskRuntimeExecutor:
     ) -> None:
         runtime.status = "running"
         runtime.started_at = time.time()
+        runtime.last_state_change_at = runtime.started_at
+        runtime.watchdog_status = "starting"
+        runtime.stall_deadline_at = runtime.started_at + self.job_start_timeout_sec
         runtime.log_path.parent.mkdir(parents=True, exist_ok=True)
         runtime.log_fp = runtime.log_path.open("w", encoding="utf-8", newline="")
 
+        job_env = {
+            **os.environ,
+            **runtime.job.env,
+            "SOCIAL_CRAWLER_RUN_ID": context.run_id,
+            "SOCIAL_CRAWLER_TASK_SLUG": context.task.slug,
+            "SOCIAL_CRAWLER_STAGE_KEY": stage_runtime.stage.key,
+            "SOCIAL_CRAWLER_JOB_KEY": runtime.job.key,
+        }
         process = subprocess.Popen(
             runtime.job.command,
             cwd=str(runtime.job.cwd),
-            env={**os.environ, **runtime.job.env},
+            env=job_env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            preexec_fn=os.setsid if os.name != "nt" else None,
         )
 
         runtime.process = process
@@ -354,6 +416,9 @@ class TaskRuntimeExecutor:
             runtime.log_fp.flush()
             with self._lock:
                 runtime.line_count += 1
+                runtime.last_output_at = time.time()
+                runtime.watchdog_status = "healthy"
+                runtime.stall_deadline_at = runtime.last_output_at + self.job_stall_timeout_sec
                 cleaned = raw_line.rstrip().replace("\r", "")
                 if cleaned:
                     runtime.last_line = cleaned[-120:]
@@ -401,13 +466,60 @@ class TaskRuntimeExecutor:
         if event_handler:
             event_handler({"type": "run_updated", "run": serialize_run_context(context)})
 
+    def _tick_watchdog(
+        self,
+        context: TaskRunContext,
+        stage_runtime: StageRuntime,
+        runtime: JobRuntime,
+        event_handler: RuntimeEventHandler | None,
+    ) -> None:
+        if runtime.status != "running" or runtime.process is None:
+            return
+
+        now = time.time()
+        if runtime.termination_requested_at:
+            if now - runtime.termination_requested_at >= self.terminate_grace_sec:
+                self._signal_process(runtime, sig=signal.SIGKILL)
+            return
+
+        deadline = runtime.stall_deadline_at
+        if deadline is None or now < deadline:
+            return
+
+        if runtime.last_output_at is None:
+            runtime.termination_reason = (
+                f"No job output within {self.job_start_timeout_sec}s start timeout."
+            )
+            runtime.watchdog_status = "stalled"
+        else:
+            runtime.termination_reason = (
+                f"No job output within {self.job_stall_timeout_sec}s stall timeout."
+            )
+            runtime.watchdog_status = "stalled"
+        runtime.last_state_change_at = now
+        runtime.termination_requested_at = now
+        runtime.stall_deadline_at = now + self.terminate_grace_sec
+        self._append_log_entry(
+            context,
+            stage_runtime=stage_runtime,
+            runtime=runtime,
+            message=f"[watchdog] {runtime.termination_reason} Sending terminate signal.",
+            level="warning",
+            event_handler=event_handler,
+        )
+        self._signal_process(runtime, sig=signal.SIGTERM)
+
     def _terminate_running_jobs(self, stage_runtimes: list[StageRuntime]) -> None:
         jobs = [job for stage in stage_runtimes for job in stage.jobs]
         for runtime in jobs:
             process = runtime.process
             if runtime.status != "running" or process is None:
                 continue
-            process.terminate()
+            runtime.termination_reason = runtime.termination_reason or "Stopped by user."
+            runtime.watchdog_status = "terminating"
+            runtime.termination_requested_at = time.time()
+            runtime.last_state_change_at = runtime.termination_requested_at
+            self._signal_process(runtime, sig=signal.SIGTERM)
 
         deadline = time.time() + 5
         while time.time() < deadline:
@@ -425,10 +537,38 @@ class TaskRuntimeExecutor:
             if runtime.status != "running" or process is None:
                 continue
             if process.poll() is None:
-                process.kill()
+                self._signal_process(runtime, sig=signal.SIGKILL)
             runtime.status = "stopped"
             runtime.exit_code = -1
             runtime.finished_at = time.time()
+            runtime.last_state_change_at = runtime.finished_at
+            runtime.watchdog_status = "stopped"
+
+    def _signal_process(self, runtime: JobRuntime, *, sig: int) -> None:
+        process = runtime.process
+        if process is None:
+            return
+        try:
+            if os.name != "nt":
+                os.killpg(os.getpgid(process.pid), sig)
+                return
+            if sig == signal.SIGTERM:
+                process.terminate()
+            else:
+                process.kill()
+        except ProcessLookupError:
+            return
+        except Exception:
+            if sig == signal.SIGTERM:
+                try:
+                    process.terminate()
+                except Exception:
+                    return
+            else:
+                try:
+                    process.kill()
+                except Exception:
+                    return
 
     @staticmethod
     def _parse_log_level(line: str) -> str:

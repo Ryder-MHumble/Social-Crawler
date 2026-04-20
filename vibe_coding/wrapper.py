@@ -10,6 +10,8 @@ Intercepts platform store calls and redirects to VibeCodingStore.
 
 from typing import Dict
 
+import config
+from database.sqlite_storage import get_sqlite_storage
 import vibe_coding.config as vc_cfg
 from vibe_coding.store import VibeCodingStore
 from tools import utils
@@ -72,6 +74,23 @@ class VibeCodingStoreWrapper:
 
         # Incremental flush to DB
         try:
+            if config.SAVE_DATA_OPTION == "sqlite":
+                get_sqlite_storage().update_vibe_top_comments(
+                    run_id=self.vibe_store._current_run_id(),
+                    platform=self.platform,
+                    content_id=content_id,
+                    top_comments_json=[
+                        {
+                            "comment_id": c.get("comment_id"),
+                            "content": c.get("content", ""),
+                            "nickname": c.get("nickname", ""),
+                            "like_count": int(c.get("like_count", 0) or 0),
+                            "publish_time": c.get("publish_time"),
+                        }
+                        for c in self._top_comments[content_id]
+                    ],
+                )
+                return
             from database.supabase_client import get_supabase
             from tools.time_util import get_current_timestamp
             sb = get_supabase()

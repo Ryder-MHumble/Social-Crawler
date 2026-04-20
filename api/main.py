@@ -23,6 +23,7 @@ Or: python -m api.main
 """
 import asyncio
 import subprocess
+import sys
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,6 +34,7 @@ from tools import runtime_paths
 from .routers import (
     crawler_router,
     data_router,
+    storage_router,
     task_center_router,
     task_center_ws_router,
     websocket_router,
@@ -65,6 +67,7 @@ app.add_middleware(
 # Register routers
 app.include_router(crawler_router, prefix="/api")
 app.include_router(data_router, prefix="/api")
+app.include_router(storage_router, prefix="/api")
 app.include_router(task_center_router, prefix="/api")
 app.include_router(websocket_router, prefix="/api")
 app.include_router(task_center_ws_router, prefix="/api")
@@ -93,9 +96,10 @@ async def health_check():
 async def check_environment():
     """Check if MediaCrawler environment is configured correctly"""
     try:
-        # Run uv run apps/crawler/run_main.py --help command to check environment
+        # Run the compatibility entrypoint with the current interpreter to
+        # avoid requiring an external `uv` executable at runtime.
         process = await asyncio.create_subprocess_exec(
-            "uv", "run", "apps/crawler/run_main.py", "--help",
+            sys.executable, "apps/crawler/run_main.py", "--help",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=str(runtime_paths.get_repo_root())
@@ -127,8 +131,8 @@ async def check_environment():
     except FileNotFoundError:
         return {
             "success": False,
-            "message": "uv command not found",
-            "error": "Please ensure uv is installed and configured in system PATH"
+            "message": "Python command not found",
+            "error": "Please ensure the backend interpreter is available"
         }
     except Exception as e:
         return {

@@ -1,9 +1,9 @@
 # Scripts Layout
 
-This repository keeps non-core entrypoints under `scripts/`:
+Non-core entrypoints are grouped under `scripts/`:
 
-- `scripts/integrations/`: small standalone services such as SMS webhooks.
-- `scripts/manual/`: operator-driven tools that require prompts, browsers, or manual checks.
-- `scripts/verification/`: verification and smoke scripts for live systems.
+- `scripts/integrations/`: small standalone services such as SMS webhooks
+- `scripts/manual/`: operator-facing tools that need prompts, browsers, or manual checks
+- `scripts/verification/`: verification and smoke scripts for live systems
 
-Task-owned workflow helpers live with their owning task package instead of under a generic script bucket.
+Helpers that belong to one task should stay with that task package instead of being dumped into a generic scripts directory.

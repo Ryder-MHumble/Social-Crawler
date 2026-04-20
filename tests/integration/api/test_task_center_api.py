@@ -153,6 +153,25 @@ def test_task_and_preset_crud(client_with_real_service: TestClient) -> None:
     assert preview_res.status_code == 200
     preview_payload = preview_res.json()
     assert preview_payload["normalized_params"]["platforms"] == ["xhs"]
+    assert preview_payload["spec"]["stages"][0]["key"] == "sentiment_keyword_parallel_crawl"
+
+    creator_preview_res = client_with_real_service.post(
+        "/api/tasks/creator_outreach/preview",
+        json={"preset_id": "preset_creator_campaign_dry_run", "params": {}},
+    )
+    assert creator_preview_res.status_code == 200
+    creator_payload = creator_preview_res.json()
+    assert creator_payload["normalized_params"]["run_dm"] is True
+    assert creator_payload["spec"]["stages"][-1]["key"] == "dm_campaign"
+
+    vibe_preview_res = client_with_real_service.post(
+        "/api/tasks/vibe_coding/preview",
+        json={"preset_id": "preset_vibe_creator_targets", "params": {}},
+    )
+    assert vibe_preview_res.status_code == 200
+    vibe_payload = vibe_preview_res.json()
+    assert vibe_payload["normalized_params"]["enable_account_crawl"] is True
+    assert vibe_payload["spec"]["stages"][0]["key"] == "vibe_creator_parallel_crawl"
 
     create_res = client_with_real_service.post(
         "/api/presets",
@@ -246,6 +265,10 @@ def test_active_run_websocket_stream(
         first = websocket.receive_json()
         assert first["type"] == "run_updated"
         assert first["run"]["id"] == run["id"]
+        first_job = first["run"]["stages"][0]["jobs"][0]
+        assert "watchdog_status" in first_job
+        assert "last_output_at" in first_job
+        assert "termination_reason" in first_job
 
         second = websocket.receive_json()
         assert second["type"] == "log"

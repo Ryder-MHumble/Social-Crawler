@@ -23,6 +23,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
+from database.sqlite_storage import TABLE_DEFINITIONS, get_sqlite_storage
 from tools import runtime_paths
 
 router = APIRouter(prefix="/data", tags=["data"])
@@ -230,3 +231,75 @@ async def get_data_stats():
                 continue
 
     return stats
+
+
+@router.get("/sqlite/stats")
+async def get_sqlite_stats(
+    table: str | None = None,
+    run_id: str | None = None,
+    task_slug: str | None = None,
+    platform: str | None = None,
+    entity_type: str | None = None,
+    clean_status: str | None = None,
+    q: str | None = None,
+):
+    storage = get_sqlite_storage()
+    return storage.get_stats(
+        table=table,
+        run_id=run_id,
+        task_slug=task_slug,
+        platform=platform,
+        entity_type=entity_type,
+        clean_status=clean_status,
+        q=q,
+    )
+
+
+@router.get("/sqlite/tables")
+async def list_sqlite_tables():
+    storage = get_sqlite_storage()
+    return {
+        "tables": storage.list_tables(),
+        "supported_tables": list(TABLE_DEFINITIONS.keys()),
+    }
+
+
+@router.get("/sqlite/rows")
+async def list_sqlite_rows(
+    table: str = "crawl_observations",
+    run_id: str | None = None,
+    task_slug: str | None = None,
+    platform: str | None = None,
+    entity_type: str | None = None,
+    clean_status: str | None = None,
+    q: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    storage = get_sqlite_storage()
+    try:
+        return storage.query_rows(
+            table=table,
+            run_id=run_id,
+            task_slug=task_slug,
+            platform=platform,
+            entity_type=entity_type,
+            clean_status=clean_status,
+            q=q,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/sqlite/row")
+async def get_sqlite_row(table: str, row_id: int):
+    storage = get_sqlite_storage()
+    try:
+        row = storage.get_row(table=table, row_id=row_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not row:
+        raise HTTPException(status_code=404, detail="Row not found")
+    return row
