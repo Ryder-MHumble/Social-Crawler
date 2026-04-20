@@ -20,6 +20,12 @@
 import os
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_RUNTIME_DIR = os.getenv("SOCIAL_CRAWLER_RUNTIME_DIR", str(_PROJECT_ROOT / "runtime"))
 _DEFAULT_DATA_DIR = os.getenv("SOCIAL_CRAWLER_DATA_DIR", str(Path(_DEFAULT_RUNTIME_DIR) / "data"))
@@ -109,11 +115,22 @@ SAVE_LOGIN_STATE = True
 # Whether to enable CDP mode - use the user's existing Chrome/Edge browser to crawl, providing better anti-detection capabilities
 # Once enabled, the user's Chrome/Edge browser will be automatically detected and started, and controlled through the CDP protocol.
 # This method uses the real browser environment, including the user's extensions, cookies and settings, greatly reducing the risk of detection.
-ENABLE_CDP_MODE = False
-
-# CDP debug port, used to communicate with the browser
-# If the port is occupied, the system will automatically try the next available port
 CDP_DEBUG_PORT = 9222
+
+# Remote CDP WebSocket URL (optional)
+# When set, skip launching a local Chrome and connect directly to a remote browser
+# service (e.g. a hosted browserless / browsergrid endpoint). Takes precedence over
+# the local CDP launch flow; ENABLE_CDP_MODE is implied.
+# Example: wss://browser.example.com/ws/sessions/<id>/cdp/devtools/browser/<browser-id>?token=...
+CDP_REMOTE_WS_URL = os.getenv("CDP_REMOTE_WS_URL", "")
+
+# Automatically enable CDP mode when a remote URL is configured
+ENABLE_CDP_MODE = bool(CDP_REMOTE_WS_URL)
+
+# Optional HTTP headers sent during the CDP WebSocket handshake (dict).
+# Use for remote services that require an Authorization header rather than a query
+# string token. Leave empty when the token is embedded in CDP_REMOTE_WS_URL.
+CDP_REMOTE_HEADERS: dict[str, str] = {}
 
 # Custom browser path (optional)
 # If it is empty, the system will automatically detect the installation path of Chrome/Edge
