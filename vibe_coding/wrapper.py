@@ -12,6 +12,7 @@ from typing import Dict
 
 import config
 from database.sqlite_storage import get_sqlite_storage
+from tools.async_file_writer import AsyncFileWriter
 import vibe_coding.config as vc_cfg
 from vibe_coding.store import VibeCodingStore
 from tools import utils
@@ -23,6 +24,7 @@ class VibeCodingStoreWrapper:
         self.platform = platform
         self.original_store = original_store
         self.vibe_store = VibeCodingStore(platform)
+        self.json_writer = AsyncFileWriter(platform=platform, crawler_type="vibe_coding")
         # content_ids that were actually saved to vibe_coding_raw_data this session
         self._saved_ids: set = set()
         # content_id -> sorted list of top-N comments
@@ -71,6 +73,9 @@ class VibeCodingStoreWrapper:
         bucket.append(comment_item)
         bucket.sort(key=lambda c: int(c.get("like_count", 0) or 0), reverse=True)
         self._top_comments[content_id] = bucket[:max_n]
+
+        if config.SAVE_DATA_OPTION == "json":
+            await self.json_writer.write_single_item_to_json(comment_item, "comments")
 
         # Incremental flush to DB
         try:

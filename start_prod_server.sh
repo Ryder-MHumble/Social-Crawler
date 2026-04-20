@@ -7,7 +7,7 @@ DEFAULT_PUBLIC_HOST="10.1.132.4"
 
 API_HOST="${API_HOST:-0.0.0.0}"
 API_PORT="${API_PORT:-18080}"
-UVICORN_WORKERS="${UVICORN_WORKERS:-2}"
+UVICORN_WORKERS="${UVICORN_WORKERS:-1}"
 UVICORN_EXTRA_ARGS="${UVICORN_EXTRA_ARGS:-}"
 PORT_CONFLICT_POLICY="${PORT_CONFLICT_POLICY:-smart}"
 API_PORT_SEARCH_LIMIT="${API_PORT_SEARCH_LIMIT:-50}"
@@ -21,6 +21,7 @@ AUTO_INIT_SQLITE="${AUTO_INIT_SQLITE:-true}"
 STARTUP_TIMEOUT_SEC="${STARTUP_TIMEOUT_SEC:-45}"
 BACKEND_LOG_PATH="${BACKEND_LOG_PATH:-$ROOT_DIR/runtime/logs/prod_server.log}"
 PID_FILE="${PID_FILE:-$ROOT_DIR/runtime/logs/prod_server.pid}"
+TAIL_LINES="${TAIL_LINES:-120}"
 
 PYTHON_CMD=""
 FINAL_API_PORT=""
@@ -28,6 +29,12 @@ BACKEND_PID=""
 STARTED_BACKEND=0
 REUSED_BACKEND=0
 CURRENT_SHELL_PGID="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ' || true)"
+ACTION="${1:-start}"
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+FOLLOW_LOGS=0
+ATTACH_START=0
 
 info() {
   printf '[info] %s\n' "$*"
@@ -48,6 +55,23 @@ die() {
 
 step() {
   printf '\n==> %s\n' "$*"
+}
+
+usage() {
+  cat <<EOF
+Usage:
+  ./start_prod_server.sh start [--attach]
+  ./start_prod_server.sh stop
+  ./start_prod_server.sh restart [--attach]
+  ./start_prod_server.sh status
+  ./start_prod_server.sh logs [-f|--follow]
+  ./start_prod_server.sh help
+
+Environment:
+  API_HOST API_PORT UVICORN_WORKERS UVICORN_EXTRA_ARGS
+  PORT_CONFLICT_POLICY API_PORT_SEARCH_LIMIT
+  BACKEND_LOG_PATH PID_FILE STARTUP_TIMEOUT_SEC
+EOF
 }
 
 is_truthy() {
@@ -380,6 +404,18 @@ stop_pid() {
   fi
 }
 
+pid_from_file() {
+  if [[ -f "$PID_FILE" ]]; then
+    cat "$PID_FILE" 2>/dev/null || true
+  fi
+}
+
+is_pid_running() {
+  local pid="$1"
+  [[ -n "$pid" ]] || return 1
+  kill -0 "$pid" >/dev/null 2>&1
+}
+
 next_available_port() {
   local start_port="$1"
   local limit="$2"
@@ -573,9 +609,9 @@ cleanup() {
   if [[ "$STARTED_BACKEND" == "1" && -n "$BACKEND_PID" ]] && kill -0 "$BACKEND_PID" >/dev/null 2>&1; then
     info "Stopping backend process group..."
     stop_pid "$BACKEND_PID" 10
+    rm -f "$PID_FILE" >/dev/null 2>&1 || true
   fi
 
-  rm -f "$PID_FILE" >/dev/null 2>&1 || true
   exit "$exit_code"
 }
 
@@ -621,7 +657,7 @@ Logs:
 EOF
 }
 
-main() {
+start_cmd() {
   local bootstrap_python python_version node_version npm_version runtime_dir env_check_result runtime_webui
 
   trap cleanup EXIT INT TERM
@@ -675,6 +711,14 @@ main() {
   FINAL_API_PORT="$(select_api_port "$API_PORT")"
   ok "API port: $FINAL_API_PORT"
 
+  if ! [[ "$UVICORN_WORKERS" =~ ^[1-9][0-9]*$ ]]; then
+    die "UVICORN_WORKERS must be a positive integer, current value: $UVICORN_WORKERS"
+  fi
+  if [[ "$UVICORN_WORKERS" != "1" ]]; then
+    warn "UVICORN_WORKERS=$UVICORN_WORKERS may cause task-center run state and websocket stream inconsistency."
+    warn "Recommended value for task-center: UVICORN_WORKERS=1"
+  fi
+
   if [[ "$REUSED_BACKEND" == "1" ]]; then
     step "Checking reused backend health"
     if ! wait_for_health "$FINAL_API_PORT" "$STARTUP_TIMEOUT_SEC"; then
@@ -708,12 +752,123 @@ main() {
     info "Backend is being reused. Script will exit without stopping it."
     STARTED_BACKEND=0
     trap - EXIT INT TERM
-    rm -f "$PID_FILE" >/dev/null 2>&1 || true
-    exit 0
+    return 0
   fi
 
-  info "Server is running. Press Ctrl+C to stop."
-  wait "$BACKEND_PID"
+  if [[ "$ATTACH_START" == "1" ]]; then
+    info "Server is running in attached mode. Press Ctrl+C to stop."
+    wait "$BACKEND_PID"
+    return 0
+  fi
+
+  info "Server is running in background mode."
+  info "Use './start_prod_server.sh logs -f' to follow logs."
+  info "Use './start_prod_server.sh stop' to stop service."
+  STARTED_BACKEND=0
+  trap - EXIT INT TERM
 }
 
-main "$@"
+stop_cmd() {
+  local pid candidate
+  local -a same_project_pids=()
+
+  pid="$(pid_from_file)"
+  if is_pid_running "$pid"; then
+    info "Stopping backend (pid=$pid)..."
+    stop_pid "$pid" 15
+    rm -f "$PID_FILE" >/dev/null 2>&1 || true
+    ok "Backend stopped."
+    return 0
+  fi
+  rm -f "$PID_FILE" >/dev/null 2>&1 || true
+
+  mapfile -t same_project_pids < <(port_pids "$API_PORT" | while read -r candidate; do
+    if is_same_project_backend "$candidate"; then
+      printf '%s\n' "$candidate"
+    fi
+  done)
+  if (( ${#same_project_pids[@]} == 0 )); then
+    info "No running backend instance found."
+    return 0
+  fi
+
+  for pid in "${same_project_pids[@]}"; do
+    info "Stopping backend detected on port $API_PORT (pid=$pid)..."
+    stop_pid "$pid" 15
+  done
+  ok "Backend stopped."
+}
+
+status_cmd() {
+  local pid
+  pid="$(pid_from_file)"
+  if is_pid_running "$pid"; then
+    ok "Backend is running (pid=$pid, log=$BACKEND_LOG_PATH)"
+    return 0
+  fi
+  if port_pids "$API_PORT" | grep -q .; then
+    warn "Port $API_PORT has a listener, but PID_FILE is missing/stale."
+    return 0
+  fi
+  info "Backend is not running."
+}
+
+logs_cmd() {
+  if [[ -f "$BACKEND_LOG_PATH" ]]; then
+    if [[ "$FOLLOW_LOGS" == "1" ]]; then
+      tail -n "$TAIL_LINES" -f "$BACKEND_LOG_PATH"
+    else
+      tail -n "$TAIL_LINES" "$BACKEND_LOG_PATH"
+    fi
+  else
+    warn "Backend log file not found: $BACKEND_LOG_PATH"
+  fi
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --attach)
+        ATTACH_START=1
+        ;;
+      -f|--follow)
+        FOLLOW_LOGS=1
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "Unknown option: $1"
+        ;;
+    esac
+    shift
+  done
+}
+
+parse_args "$@"
+
+case "$ACTION" in
+  start)
+    start_cmd
+    ;;
+  stop)
+    stop_cmd
+    ;;
+  restart)
+    stop_cmd
+    start_cmd
+    ;;
+  status)
+    status_cmd
+    ;;
+  logs)
+    logs_cmd
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    die "Unknown action: $ACTION"
+    ;;
+esac

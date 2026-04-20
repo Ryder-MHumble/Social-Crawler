@@ -25,6 +25,12 @@ PLATFORM_OPTIONS = [
     TaskFieldOption(value=platform, label=label)
     for platform, label in PLATFORM_LABELS.items()
 ]
+SAVE_OPTIONS = [
+    TaskFieldOption(value="json", label="JSON (Local Default)"),
+    TaskFieldOption(value="sqlite", label="SQLite"),
+    TaskFieldOption(value="supabase", label="Supabase"),
+]
+ALLOWED_SAVE_OPTIONS = {option.value for option in SAVE_OPTIONS}
 FALLBACK_CONFIG = {
     "default_inputs": {
         "platforms": list(getattr(vc_cfg, "VIBE_CODING_PLATFORMS", ["xhs", "bili"])),
@@ -43,6 +49,7 @@ FALLBACK_CONFIG = {
         "account_blacklist": [],
         "min_engagement": getattr(vc_cfg, "VIBE_CODING_MIN_ENGAGEMENT", 5),
         "keyword_score_threshold": getattr(vc_cfg, "KEYWORD_SCORE_THRESHOLD", 4),
+        "save_option": "json",
     },
     "presets": [
         {"id": "default", "name": "Vibe Radar 默认版", "is_default": True},
@@ -115,6 +122,11 @@ def _resolve_accounts(specified: Any, whitelist: Any, blacklist: Any) -> list[st
     return [item for item in _sanitize_list(combined) if item not in excluded]
 
 
+def _normalize_save_option(value: Any, fallback: str) -> str:
+    candidate = str(value).strip() if value is not None else fallback
+    return candidate if candidate in ALLOWED_SAVE_OPTIONS else fallback
+
+
 def _load_config() -> dict[str, Any]:
     loaded: dict[str, Any] = {}
     if yaml is None and _TASK_CONFIG_PATH.exists():
@@ -178,6 +190,7 @@ DEFAULT_PARAMS = {
     "account_blacklist": _csv(DEFAULT_INPUTS["account_blacklist"]),
     "min_engagement": int(DEFAULT_INPUTS["min_engagement"]),
     "keyword_score_threshold": int(DEFAULT_INPUTS["keyword_score_threshold"]),
+    "save_option": _normalize_save_option(DEFAULT_INPUTS.get("save_option"), "json"),
 }
 
 
@@ -209,6 +222,7 @@ def get_template() -> TaskTemplate:
             TaskField(key="specified_account_ids", component="textarea", label="指定账号 ID", default=DEFAULT_PARAMS["specified_account_ids"], group="账号定向", visible_when={"enable_account_crawl": True}),
             TaskField(key="account_whitelist", component="textarea", label="账号白名单", default=DEFAULT_PARAMS["account_whitelist"], group="账号定向", visible_when={"enable_account_crawl": True}),
             TaskField(key="account_blacklist", component="textarea", label="账号黑名单", default=DEFAULT_PARAMS["account_blacklist"], group="账号定向", visible_when={"enable_account_crawl": True}),
+            TaskField(key="save_option", component="select", label="保存方式", default=DEFAULT_PARAMS["save_option"], group="运行配置", options=SAVE_OPTIONS),
         ],
     )
 
@@ -255,6 +269,7 @@ def normalize_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]:
         "account_blacklist": _csv(raw.get("account_blacklist", DEFAULT_PARAMS["account_blacklist"])),
         "min_engagement": _coerce_int(raw.get("min_engagement"), DEFAULT_PARAMS["min_engagement"]),
         "keyword_score_threshold": _coerce_int(raw.get("keyword_score_threshold"), DEFAULT_PARAMS["keyword_score_threshold"]),
+        "save_option": _normalize_save_option(raw.get("save_option"), DEFAULT_PARAMS["save_option"]),
     }
     if params["max_notes_count"] < 1:
         raise ValueError("max_notes_count must be greater than 0.")
@@ -309,6 +324,8 @@ def build_task(
                     str(normalized["max_notes_count"]),
                     "--min-engagement",
                     str(normalized["min_engagement"]),
+                    "--save-data-option",
+                    normalized["save_option"],
                 ],
                 cwd=project_root,
             )
@@ -346,6 +363,8 @@ def build_task(
                     "true" if normalized["enable_sub_comments"] else "false",
                     "--max_comments_count_singlenotes",
                     str(normalized["max_comments_count_singlenotes"]),
+                    "--save_data_option",
+                    normalized["save_option"],
                 ],
                 cwd=project_root,
             )
@@ -376,6 +395,7 @@ def build_task(
             f"Creator crawl: {'enabled' if normalized['enable_account_crawl'] else 'disabled'}",
             f"Keywords: {normalized['keywords'] or 'n/a'}",
             f"Creator IDs: {normalized['specified_account_ids'] or 'n/a'}",
+            f"Save option: {normalized['save_option']}",
         ],
         stages=stages,
         aliases=["vibe", "idea_radar"],

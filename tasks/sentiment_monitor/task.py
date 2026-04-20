@@ -143,6 +143,7 @@ FALLBACK_TASK_CONFIG = {
         "account_whitelist": [],
         "account_blacklist": [],
         "login_type": getattr(config, "LOGIN_TYPE", "qrcode"),
+        "cookies": getattr(config, "COOKIES", ""),
         "save_option": "json",
         "headless": getattr(config, "HEADLESS", False),
     },
@@ -216,6 +217,12 @@ def _normalize_login_type(value: Any, fallback: str) -> str:
 def _normalize_save_option(value: Any, fallback: str) -> str:
     candidate = str(value).strip() if value is not None else fallback
     return candidate if candidate in ALLOWED_SAVE_OPTIONS else fallback
+
+
+def _normalize_cookie_text(value: Any, fallback: str = "") -> str:
+    if value is None:
+        return fallback
+    return str(value).strip()
 
 
 def _normalize_keyword_text(value: Any, fallback: str) -> str:
@@ -397,6 +404,12 @@ def _normalize_external_task_config(raw: Mapping[str, Any]) -> dict[str, Any]:
         )
         if isinstance(default_inputs_raw, Mapping)
         else str(fallback_defaults["login_type"]),
+        "cookies": _normalize_cookie_text(
+            default_inputs_raw.get("cookies"),
+            str(fallback_defaults.get("cookies", "")),
+        )
+        if isinstance(default_inputs_raw, Mapping)
+        else str(fallback_defaults.get("cookies", "")),
         "save_option": _normalize_save_option(
             default_inputs_raw.get("save_option"),
             str(fallback_defaults["save_option"]),
@@ -613,6 +626,10 @@ def _load_task_config() -> dict[str, Any]:
             loaded_defaults.get("login_type"),
             str(fallback_defaults["login_type"]),
         ),
+        "cookies": _normalize_cookie_text(
+            loaded_defaults.get("cookies"),
+            str(fallback_defaults.get("cookies", "")),
+        ),
         "save_option": _normalize_save_option(
             loaded_defaults.get("save_option"),
             str(fallback_defaults["save_option"]),
@@ -681,6 +698,7 @@ UI_DEFAULT_PARAMS = {
     "account_whitelist": _csv_text(DEFAULT_INPUTS["account_whitelist"]),
     "account_blacklist": _csv_text(DEFAULT_INPUTS["account_blacklist"]),
     "login_type": str(DEFAULT_INPUTS["login_type"]),
+    "cookies": _normalize_cookie_text(DEFAULT_INPUTS.get("cookies", "")),
     "save_option": str(DEFAULT_INPUTS["save_option"]),
     "headless": bool(DEFAULT_INPUTS["headless"]),
 }
@@ -732,6 +750,7 @@ def _build_seed_params(
         "account_whitelist": "",
         "account_blacklist": "",
         "login_type": UI_DEFAULT_PARAMS["login_type"],
+        "cookies": "",
         "save_option": _normalize_save_option(
             save_option,
             UI_DEFAULT_PARAMS["save_option"],
@@ -1002,11 +1021,25 @@ def get_template() -> TaskTemplate:
                 options=SAVE_OPTIONS,
             ),
             TaskField(
+                key="cookies",
+                component="textarea",
+                label="Cookie 内容",
+                default=UI_DEFAULT_PARAMS["cookies"],
+                group="运行配置",
+                rows=4,
+                layout="full",
+                placeholder="粘贴完整 Cookie 字符串，例如 a=1; b=2",
+                helper_text="仅在 Cookie 登录时生效。若留空，则回退读取 cookies_config.py 中的平台 Cookie。",
+                visible_when={"login_type": "cookie"},
+            ),
+            TaskField(
                 key="headless",
                 component="switch",
                 label="无头模式",
                 default=UI_DEFAULT_PARAMS["headless"],
                 group="运行配置",
+                helper_text="二维码登录会自动关闭无头模式，确保浏览器窗口可见并可扫码。",
+                disabled_when={"login_type": "qrcode"},
             ),
         ],
     )
@@ -1082,9 +1115,13 @@ def normalize_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]:
         "account_whitelist": _csv_text(account_whitelist),
         "account_blacklist": _csv_text(account_blacklist),
         "login_type": _normalize_login_type(raw.get("login_type"), UI_DEFAULT_PARAMS["login_type"]),
+        "cookies": _normalize_cookie_text(raw.get("cookies"), UI_DEFAULT_PARAMS["cookies"]),
         "save_option": _normalize_save_option(raw.get("save_option"), UI_DEFAULT_PARAMS["save_option"]),
         "headless": _coerce_bool(raw.get("headless"), UI_DEFAULT_PARAMS["headless"]),
     }
+    if params["login_type"] == "qrcode":
+        # QR login requires a visible browser window for manual scan/verification.
+        params["headless"] = False
     if params["max_notes_count"] < 1:
         raise ValueError("max_notes_count must be greater than 0.")
     if params["max_comments_count_singlenotes"] < 1:
@@ -1152,6 +1189,7 @@ def _resolve_runtime_params(params: Mapping[str, Any] | None) -> dict[str, Any]:
                 UI_DEFAULT_PARAMS["account_blacklist"],
             ),
             "login_type": os.getenv("SENTIMENT_LOGIN_TYPE", UI_DEFAULT_PARAMS["login_type"]),
+            "cookies": os.getenv("SENTIMENT_COOKIES", UI_DEFAULT_PARAMS["cookies"]),
             "save_option": os.getenv("SENTIMENT_SAVE_OPTION", UI_DEFAULT_PARAMS["save_option"]),
             "headless": os.getenv(
                 "SENTIMENT_HEADLESS",
@@ -1167,6 +1205,27 @@ def build_task(
     params: Mapping[str, Any] | None = None,
 ) -> TaskSpec:
     normalized = _resolve_runtime_params(params)
+    login_type = str(normalized["login_type"])
+    cookie_input = _normalize_cookie_text(normalized.get("cookies"), "")
+    platform_cookie_map: dict[str, str] = {}
+    if login_type == "cookie":
+        if cookie_input:
+            for platform in normalized["platforms"]:
+                platform_cookie_map[platform] = cookie_input
+        else:
+            missing_cookie_platforms: list[str] = []
+            for platform in normalized["platforms"]:
+                platform_cookie = _load_cookie(platform)
+                if platform_cookie:
+                    platform_cookie_map[platform] = platform_cookie
+                else:
+                    missing_cookie_platforms.append(platform)
+            if missing_cookie_platforms:
+                labels = ", ".join(PLATFORM_LABELS.get(item, item) for item in missing_cookie_platforms)
+                raise ValueError(
+                    f"已选择 Cookie 登录，但未提供 Cookie，且 cookies_config.py 中也没有这些平台的 Cookie: {labels}。"
+                )
+
     stages: list[TaskStage] = []
     for crawl_type, stage_key, stage_name, stage_value_key, flag in (
         (
@@ -1190,10 +1249,8 @@ def build_task(
             continue
         jobs: list[TaskJob] = []
         for platform in normalized["platforms"]:
-            cookie = _load_cookie(platform) if normalized["login_type"] == "cookie" else ""
-            runtime_login_type = "cookie" if cookie else (
-                "qrcode" if normalized["login_type"] == "cookie" else normalized["login_type"]
-            )
+            cookie = platform_cookie_map.get(platform, "")
+            runtime_login_type = login_type
             command = [
                 python_executable,
                 "main.py",
@@ -1255,6 +1312,7 @@ def build_task(
             f"Platforms: {', '.join(PLATFORM_LABELS.get(p, p) for p in normalized['platforms'])}",
             f"Comments: {'enabled' if normalized['enable_comments'] else 'disabled'}",
             f"Save option: {normalized['save_option']}",
+            f"Login: {normalized['login_type']} / headless={normalized['headless']} / cookie={'set' if cookie_input else 'unset'}",
         ],
         stages=stages,
         aliases=["sentiment", "monitor"],

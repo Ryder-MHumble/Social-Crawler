@@ -20,6 +20,7 @@ import config
 from database.sqlite_storage import get_sqlite_storage
 from database.supabase_client import get_supabase
 from database.supabase_store_base import SupabaseStoreBase
+from tools.async_file_writer import AsyncFileWriter
 from tools import utils
 from tools.time_util import get_current_timestamp
 import vibe_coding.config as vc_cfg
@@ -45,6 +46,7 @@ class VibeCodingStore(SupabaseStoreBase):
         self._tier_b = [kw.lower() for kw in vc_cfg.KEYWORDS_TIER_B]
         self._tier_c = [kw.lower() for kw in vc_cfg.KEYWORDS_TIER_C]
         self._blacklist = [kw.lower() for kw in vc_cfg.KEYWORDS_BLACKLIST]
+        self._json_writer = AsyncFileWriter(platform=platform, crawler_type="vibe_coding")
 
     # ------------------------------------------------------------------
     # Preload (cross-session dedup)
@@ -406,6 +408,22 @@ class VibeCodingStore(SupabaseStoreBase):
             utils.logger.info(
                 f"[VibeCodingStore] SAVED {self.platform}/{content_id} "
                 f"score={score} [{trend_category}] kw={matched_keywords[:3]}"
+            )
+            return {"status": "ok"}
+
+        if config.SAVE_DATA_OPTION == "json":
+            await self._json_writer.write_single_item_to_json(
+                item={
+                    **row,
+                    "matched_keywords": matched_keywords,
+                    "keyword_score": score,
+                    "title_fingerprint": fp,
+                },
+                item_type="contents",
+            )
+            utils.logger.info(
+                f"[VibeCodingStore] SAVED {self.platform}/{content_id} "
+                f"score={score} [{trend_category}] kw={matched_keywords[:3]} -> JSON"
             )
             return {"status": "ok"}
 

@@ -1,4 +1,7 @@
 import type {
+  DataFileInfo,
+  DataFilePreview,
+  DataFileFilters,
   EnvCheckResult,
   SqliteRow,
   SqliteRowFilters,
@@ -169,6 +172,22 @@ export async function fetchSqliteRows(filters: SqliteRowFilters): Promise<Sqlite
 export async function fetchSqliteRow(table: string, rowId: number): Promise<SqliteRow> {
   return request<SqliteRow>(
     `/data/sqlite/row?table=${encodeURIComponent(table)}&row_id=${encodeURIComponent(String(rowId))}`,
+  );
+}
+
+export async function fetchDataFiles(filters: Partial<Pick<DataFileFilters, "platform" | "file_type">> = {}): Promise<DataFileInfo[]> {
+  const params = new URLSearchParams();
+  if (filters.platform) params.set("platform", filters.platform);
+  if (filters.file_type) params.set("file_type", filters.file_type);
+  const payload = await request<{ files: DataFileInfo[] }>(
+    `/data/files${params.toString() ? `?${params.toString()}` : ""}`,
+  );
+  return payload.files;
+}
+
+export async function fetchDataFilePreview(filePath: string, limit = 100): Promise<DataFilePreview> {
+  return request<DataFilePreview>(
+    `/data/files/${encodeURIComponent(filePath)}?preview=true&limit=${encodeURIComponent(String(limit))}`,
   );
 }
 

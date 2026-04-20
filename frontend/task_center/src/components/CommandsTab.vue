@@ -1,14 +1,30 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import type { SqliteStatus, TaskPreview, TaskStage } from "../types";
 
-defineProps<{
+const props = defineProps<{
   preview: TaskPreview | null;
   sqliteStatus: SqliteStatus | null;
   storageSummary: string;
 }>();
 
+const normalizedParamEntries = computed(() => {
+  if (!props.preview) return [];
+  return Object.entries(props.preview.normalized_params).map(([key, value]) => {
+    const full = prettyValue(value);
+    const compact =
+      full.length > 180 ? `${full.slice(0, 180)}...` : full;
+    return {
+      key,
+      full,
+      compact,
+      expandable: full.length > 180 || full.includes("\n"),
+    };
+  });
+});
+
 function prettyValue(value: unknown): string {
-  if (typeof value === "string") return value;
+  if (typeof value === "string") return value.trim();
   return JSON.stringify(value, null, 2);
 }
 
@@ -33,18 +49,34 @@ async function copyCommand(stage: TaskStage, jobKey: string) {
     </div>
 
     <div v-if="preview" class="command-layout">
-      <article class="command-card">
-        <h3>归一化参数</h3>
-        <div class="kv-table">
-          <div v-for="(value, key) in preview.normalized_params" :key="key" class="kv-row">
-            <span>{{ key }}</span>
-            <code>{{ prettyValue(value) }}</code>
+      <article class="command-card command-card-params">
+        <div class="command-card-head">
+          <h3>归一化参数</h3>
+          <span class="state-chip neutral">{{ normalizedParamEntries.length }} 项</span>
+        </div>
+        <div class="kv-table command-param-table">
+          <div
+            v-for="entry in normalizedParamEntries"
+            :key="entry.key"
+            class="kv-row command-param-row"
+          >
+            <span class="command-param-key">{{ entry.key }}</span>
+            <div class="command-param-value">
+              <code v-if="!entry.expandable">{{ entry.compact }}</code>
+              <details v-else class="command-param-details">
+                <summary>{{ entry.compact }}</summary>
+                <pre><code>{{ entry.full }}</code></pre>
+              </details>
+            </div>
           </div>
         </div>
       </article>
 
-      <article class="command-card">
-        <h3>命令预览</h3>
+      <article class="command-card command-card-jobs">
+        <div class="command-card-head">
+          <h3>命令预览</h3>
+          <span class="state-chip neutral">{{ preview.spec.stages.length }} 个阶段</span>
+        </div>
         <div class="stage-command-list">
           <section v-for="stage in preview.spec.stages" :key="stage.key" class="stage-command">
             <div class="stage-command-head">

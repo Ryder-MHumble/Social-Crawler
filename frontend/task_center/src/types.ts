@@ -171,6 +171,23 @@ export interface SqliteRowsResponse {
   total: number;
 }
 
+export interface DataFileInfo {
+  name: string;
+  path: string;
+  size: number;
+  modified_at: number;
+  record_count: number | null;
+  type: string;
+}
+
+export interface DataFilePreview {
+  data: unknown;
+  total: number;
+  columns?: string[];
+}
+
+export type DataBrowseMode = "sqlite" | "files";
+
 export interface SqliteRowFilters {
   table: string;
   run_id: string;
@@ -181,6 +198,12 @@ export interface SqliteRowFilters {
   q: string;
   limit: number;
   offset: number;
+}
+
+export interface DataFileFilters {
+  platform: string;
+  file_type: string;
+  q: string;
 }
 
 export interface EnvCheckResult {

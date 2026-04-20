@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import sys
 
+import config
 import vibe_coding.config as vc_cfg
 from tools import utils
 from vibe_coding.config import generate_crawl_session_id
@@ -70,6 +71,11 @@ async def main() -> None:
         "--enabled",
         help="Override ENABLE_VIBE_CODING_COLLECTION with true/false.",
     )
+    parser.add_argument(
+        "--save-data-option",
+        choices=["json", "sqlite", "supabase"],
+        help="Override SAVE_DATA_OPTION for vibe persistence.",
+    )
     args = parser.parse_args()
 
     if args.list_keywords:
@@ -86,6 +92,8 @@ async def main() -> None:
         vc_cfg.VIBE_CODING_MAX_NOTES_PER_KEYWORD = max(1, args.max_notes_per_keyword)
     if args.min_engagement is not None:
         vc_cfg.VIBE_CODING_MIN_ENGAGEMENT = max(0, args.min_engagement)
+    if args.save_data_option:
+        config.SAVE_DATA_OPTION = args.save_data_option
 
     if not vc_cfg.ENABLE_VIBE_CODING_COLLECTION:
         utils.logger.error(

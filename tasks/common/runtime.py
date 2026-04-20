@@ -7,6 +7,7 @@ import subprocess
 import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -324,6 +325,19 @@ class TaskRuntimeExecutor:
                     else:
                         runtime.status = "success" if code == 0 else "failed"
                         runtime.watchdog_status = "completed"
+                        if code != 0:
+                            runtime.termination_reason = self._summarize_failure_reason(runtime)
+                            self._append_log_entry(
+                                context,
+                                stage_runtime=stage_runtime,
+                                runtime=runtime,
+                                message=(
+                                    f"[runner] Job exited with code {code}. "
+                                    f"Reason: {runtime.termination_reason}"
+                                ),
+                                level="error",
+                                event_handler=event_handler,
+                            )
 
                 if stop_event.is_set():
                     self._terminate_running_jobs([stage_runtime])
@@ -582,3 +596,72 @@ class TaskRuntimeExecutor:
         if "DEBUG" in line_upper:
             return "debug"
         return "info"
+
+    def _summarize_failure_reason(self, runtime: JobRuntime) -> str:
+        """Extract a short, user-facing failure reason from recent logs."""
+        tail_lines: deque[str] = deque(maxlen=120)
+        try:
+            with runtime.log_path.open("r", encoding="utf-8", errors="replace") as fp:
+                for line in fp:
+                    cleaned = line.strip()
+                    if cleaned:
+                        tail_lines.append(cleaned)
+        except Exception:
+            pass
+
+        readable_patterns = (
+            (
+                "Missing X server or $DISPLAY",
+                "缺少图形显示环境（DISPLAY），二维码登录无法弹出浏览器。",
+            ),
+            (
+                "The platform failed to initialize",
+                "浏览器图形环境初始化失败，请确认 DISPLAY 或改用 Cookie 登录。",
+            ),
+            (
+                "DataFetchError: 您当前登录的账号没有权限访问",
+                "当前登录账号没有权限访问目标内容。",
+            ),
+            (
+                "DataFetchError",
+                "数据拉取失败，请检查账号权限或平台风控状态。",
+            ),
+        )
+        for line in reversed(tail_lines):
+            for pattern, reason in readable_patterns:
+                if pattern in line:
+                    return reason
+
+        priority_tokens = (
+            "DataFetchError",
+            "RetryError",
+            "Error:",
+            "Exception:",
+            "HTTPError",
+            "没有权限",
+            "not found",
+            "timed out",
+        )
+        skip_prefixes = (
+            "Traceback",
+            "File \"",
+            "raise ",
+            "return ",
+            "^",
+        )
+
+        for line in reversed(tail_lines):
+            if line.startswith(skip_prefixes):
+                continue
+            if any(token in line for token in priority_tokens):
+                return line[:280]
+
+        if runtime.last_line:
+            return runtime.last_line[:280]
+
+        for line in reversed(tail_lines):
+            if not line.startswith(skip_prefixes):
+                return line[:280]
+
+        exit_code = runtime.exit_code if runtime.exit_code is not None else "unknown"
+        return f"Process exited with code {exit_code}."

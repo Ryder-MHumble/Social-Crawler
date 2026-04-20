@@ -167,6 +167,7 @@ cython_debug/
 /data/
 /runtime/
 /archive/
+/logs/
 
 */.DS_Store
 .vscode

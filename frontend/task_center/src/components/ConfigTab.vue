@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import SelectField from "./SelectField.vue";
+import ToggleSwitch from "./ToggleSwitch.vue";
 import type { GroupedFieldSection, Primitive, TaskFieldSchema } from "../types";
 
 const props = defineProps<{
@@ -68,7 +70,10 @@ function toggleMultiValue(field: TaskFieldSchema, value: Primitive, checked: boo
 }
 
 function helperLines(field: TaskFieldSchema): string[] {
-  const lines = [field.helper_text, field.description].filter(Boolean) as string[];
+  const lines =
+    field.component === "switch"
+      ? []
+      : ([field.helper_text, field.description].filter(Boolean) as string[]);
   if (field.validation?.min !== undefined) lines.push(`最小值 ${field.validation.min}`);
   if (field.validation?.max !== undefined) lines.push(`最大值 ${field.validation.max}`);
   if (field.validation?.step !== undefined) lines.push(`步长 ${field.validation.step}`);
@@ -81,6 +86,18 @@ function isMultiSelected(field: TaskFieldSchema, value: Primitive): boolean {
   return Array.isArray(props.formParams[field.key])
     ? (props.formParams[field.key] as Primitive[]).includes(value)
     : false;
+}
+
+function switchDescription(field: TaskFieldSchema): string {
+  return [field.helper_text, field.description].filter(Boolean).join(" · ");
+}
+
+function selectOptions(field: TaskFieldSchema) {
+  return field.options.map((option) => ({
+    value: String(option.value),
+    label: option.label,
+    description: option.description,
+  }));
 }
 </script>
 
@@ -114,9 +131,12 @@ function isMultiSelected(field: TaskFieldSchema, value: Primitive): boolean {
         v-for="field in activeGroup.fields"
         :key="field.key"
         class="config-field"
-        :class="{ wide: field.layout === 'full' || field.component === 'textarea' || field.component === 'multiselect' }"
+        :class="{
+          wide: field.layout === 'full' || field.component === 'textarea' || field.component === 'multiselect',
+          'switch-card': field.component === 'switch',
+        }"
       >
-        <div class="config-field-head">
+        <div v-if="field.component !== 'switch'" class="config-field-head">
           <label :for="field.key">{{ field.label }}</label>
           <span class="field-badges">
             <small v-if="field.required">必填</small>
@@ -154,28 +174,22 @@ function isMultiSelected(field: TaskFieldSchema, value: Primitive): boolean {
           @input="updateField(field, $event)"
         />
 
-        <select
+        <SelectField
           v-else-if="field.component === 'select'"
-          :id="field.key"
-          :value="String(formParams[field.key] ?? '')"
+          :model-value="String(formParams[field.key] ?? '')"
+          :options="selectOptions(field)"
           :disabled="isFieldDisabled(field)"
-          @change="updateField(field, $event)"
-        >
-          <option v-for="option in field.options" :key="String(option.value)" :value="String(option.value)">
-            {{ option.label }}
-          </option>
-        </select>
+          @update:model-value="emit('update-field', field.key, getOptionValueFromInput(field, $event))"
+        />
 
-        <label v-else-if="field.component === 'switch'" class="switch-field">
-          <input
-            :id="field.key"
-            type="checkbox"
-            :checked="Boolean(formParams[field.key])"
-            :disabled="isFieldDisabled(field)"
-            @change="updateField(field, $event)"
-          />
-          <span>{{ formParams[field.key] ? "开启" : "关闭" }}</span>
-        </label>
+        <ToggleSwitch
+          v-else-if="field.component === 'switch'"
+          :model-value="Boolean(formParams[field.key])"
+          :label="field.label"
+          :description="switchDescription(field)"
+          :disabled="isFieldDisabled(field)"
+          @update:model-value="emit('update-field', field.key, $event)"
+        />
 
         <div v-else-if="field.component === 'multiselect'" class="multi-grid">
           <label v-for="option in field.options" :key="String(option.value)" class="multi-option">
@@ -189,7 +203,7 @@ function isMultiSelected(field: TaskFieldSchema, value: Primitive): boolean {
           </label>
         </div>
 
-        <div class="field-meta">
+        <div v-if="helperLines(field).length" class="field-meta">
           <span v-for="line in helperLines(field)" :key="line">{{ line }}</span>
         </div>
       </article>

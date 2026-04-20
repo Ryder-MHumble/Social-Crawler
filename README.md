@@ -21,7 +21,9 @@
 ## 目录关系
 
 ```text
-run_crawl.sh/.ps1/.cmd (兼容入口)
+social_crawler.sh/.ps1 (统一入口)
+  -> task/dev/prod 命令分发
+run_crawl.sh/.ps1/.cmd (兼容入口，转发到统一入口)
   -> apps/crawler/run_tasks.py
     -> tasks/runner/run_crawl.py (任务选择/--list/--dry-run)
       -> tasks/*/task.py (构建 TaskSpec)
@@ -86,7 +88,32 @@ jisu_crypto=
 
 ## 运行
 
-### 1) 任务中心 CLI
+### 1) 统一入口（推荐）
+
+不带参数时会打印命令提示，在终端交互场景下会进入菜单。
+
+```bash
+# macOS / Linux
+./social_crawler.sh
+./social_crawler.sh task --list
+./social_crawler.sh task sentiment_monitor
+./social_crawler.sh dev start
+./social_crawler.sh dev logs -f
+./social_crawler.sh prod start
+./social_crawler.sh prod stop
+./social_crawler.sh prod logs -f
+```
+
+```powershell
+# Windows PowerShell
+.\social_crawler.ps1
+.\social_crawler.ps1 task --list
+.\social_crawler.ps1 task sentiment_monitor
+.\social_crawler.ps1 dev start
+.\social_crawler.ps1 prod logs -f
+```
+
+### 2) 任务中心 CLI（兼容入口）
 
 不带参数时会进入交互式菜单。
 
@@ -114,7 +141,7 @@ run_crawl.cmd --list
 run_crawl.cmd sentiment_monitor
 ```
 
-### 2) 旧单平台入口
+### 3) 旧单平台入口
 
 如果你还在用旧方式，也可以直接调用 `main.py`：
 
@@ -134,7 +161,9 @@ uv run main.py --platform xhs --lt qrcode --type search \
 ### 开发模式
 
 ```bash
-./start_dev_local.sh
+./social_crawler.sh dev start
+./social_crawler.sh dev stop
+./social_crawler.sh dev logs -f
 ```
 
 默认：
@@ -144,7 +173,9 @@ uv run main.py --platform xhs --lt qrcode --type search \
 ### 生产模式
 
 ```bash
-./start_prod_server.sh
+./social_crawler.sh prod start
+./social_crawler.sh prod stop
+./social_crawler.sh prod logs -f
 ```
 
 脚本会先构建前端，再启动 `uvicorn apps.api.serve:app`。
@@ -219,7 +250,9 @@ uv run pytest tests/integration
 
 ## 兼容性
 
+- 主入口是 `social_crawler.sh/.ps1`。
 - `run_crawl.sh/.ps1/.cmd` 和 `main.py` 会打印 `[Deprecated Entry]`，表示它们仍可用，但已经不是主入口。
+- `start_dev_local.sh`、`start_prod_server.sh` 仍可单独调用，但建议通过统一入口调用。
 - 新功能优先围绕 `tasks/`、`api/`、`frontend/task_center/` 演进。
 
 ## 合规与许可

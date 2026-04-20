@@ -39,6 +39,27 @@ const filteredLogs = computed(() => {
   );
 });
 
+const jobFailureReason = computed(() => {
+  const job = activeJob.value;
+  if (!job) return "无";
+  if (job.termination_reason?.trim()) return job.termination_reason.trim();
+  if (job.status !== "failed") return "无";
+
+  for (let index = filteredLogs.value.length - 1; index >= 0; index -= 1) {
+    const entry = filteredLogs.value[index];
+    const message = String(entry.message || "").trim();
+    if (!message) continue;
+    if (entry.level === "error") return message;
+    if (message.includes("Error:") || message.includes("Exception:") || message.includes("DataFetchError")) {
+      return message;
+    }
+  }
+
+  if (job.last_line?.trim()) return job.last_line.trim();
+  if (job.exit_code !== undefined && job.exit_code !== null) return `进程退出码：${job.exit_code}`;
+  return "任务失败，但未记录明确错误原因。";
+});
+
 function formatTime(value?: string | null): string {
   if (!value) return "未记录";
   const date = new Date(value);
@@ -146,9 +167,9 @@ function countdownText(job: TaskJob | null): string {
             </div>
           </div>
 
-          <div class="termination-box" :class="{ error: activeJob.termination_reason }">
+          <div class="termination-box" :class="{ error: activeJob.status === 'failed' || Boolean(activeJob.termination_reason) }">
             <span>失败 / 终止原因</span>
-            <strong>{{ activeJob.termination_reason || "无" }}</strong>
+            <strong>{{ jobFailureReason }}</strong>
           </div>
 
           <div class="log-stream">

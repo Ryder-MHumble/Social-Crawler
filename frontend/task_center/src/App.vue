@@ -5,6 +5,8 @@ import {
   createPreset,
   deletePreset,
   fetchActiveRun,
+  fetchDataFilePreview,
+  fetchDataFiles,
   fetchEnvCheck,
   fetchPresets,
   fetchRunLogs,
@@ -29,6 +31,10 @@ import SystemTab from "./components/SystemTab.vue";
 import TopActionBar from "./components/TopActionBar.vue";
 import WorkspaceSidebar from "./components/WorkspaceSidebar.vue";
 import type {
+  DataBrowseMode,
+  DataFileFilters,
+  DataFileInfo,
+  DataFilePreview,
   EnvCheckResult,
   GroupedFieldSection,
   SqliteRow,
@@ -67,6 +73,10 @@ const sqliteSupportedTables = ref<string[]>([]);
 const sqliteStats = ref<SqliteStats | null>(null);
 const sqliteRows = ref<SqliteRowsResponse | null>(null);
 const selectedDataRow = ref<SqliteRow | null>(null);
+const selectedDataMode = ref<DataBrowseMode>("sqlite");
+const dataFiles = ref<DataFileInfo[]>([]);
+const selectedDataFilePath = ref<string | null>(null);
+const selectedDataFilePreview = ref<DataFilePreview | null>(null);
 const envCheck = ref<EnvCheckResult | null>(null);
 
 const selectedTaskSlug = ref("");
@@ -86,6 +96,7 @@ const isSavingPreset = ref(false);
 const isStartingRun = ref(false);
 const isSystemLoading = ref(false);
 const isDataLoading = ref(false);
+const isFileLoading = ref(false);
 const isInitializingSqlite = ref(false);
 
 const message = ref("");
@@ -103,9 +114,15 @@ const dataFilters = ref<SqliteRowFilters>({
   limit: 50,
   offset: 0,
 });
+const dataFileFilters = ref<DataFileFilters>({
+  platform: "",
+  file_type: "",
+  q: "",
+});
 
 let previewTimer: number | null = null;
 let dataTimer: number | null = null;
+let fileTimer: number | null = null;
 let reconnectTimer: number | null = null;
 let clockTimer: number | null = null;
 let socket: WebSocket | null = null;
@@ -141,14 +158,16 @@ const groupedFields = computed<GroupedFieldSection[]>(() => {
   return Array.from(groups.values());
 });
 
+function findRun(runId: string | null): TaskRun | null {
+  if (!runId) return null;
+  if (activeRun.value?.id === runId) return activeRun.value;
+  return runs.value.find((run) => run.id === runId) ?? null;
+}
+
+const selectedRun = computed(() => findRun(selectedRunId.value));
+
 const displayedRun = computed(() => {
-  if (selectedRunId.value && activeRun.value?.id === selectedRunId.value) {
-    return activeRun.value;
-  }
-  if (selectedRunId.value) {
-    return runs.value.find((run) => run.id === selectedRunId.value) ?? activeRun.value ?? null;
-  }
-  return activeRun.value ?? runs.value[0] ?? null;
+  return selectedRun.value ?? activeRun.value ?? runs.value[0] ?? null;
 });
 
 const recentRuns = computed(() =>
@@ -165,10 +184,14 @@ const storageSummary = computed(() => {
   if (selectedTaskSlug.value === "creator_outreach") {
     return "SQLite · candidate / delivery tables";
   }
-  const saveOption = String(formParams.value.save_option ?? formParams.value.save_data_option ?? "").trim();
+  const saveOption = resolveSaveOption(formParams.value);
   if (saveOption === "sqlite") return "SQLite · crawl tables + observations";
+  if (saveOption === "json") return "JSON 文件 · runtime/data";
+  if (saveOption === "csv") return "CSV 文件 · runtime/data";
+  if (saveOption === "excel") return "Excel 文件 · runtime/data";
+  if (saveOption === "supabase") return "Supabase · remote dataset";
   if (!saveOption) return "默认输出 · 任务定义决定";
-  return `${saveOption.toUpperCase()} · 非 SQLite`;
+  return `${saveOption.toUpperCase()} · 任务存储`;
 });
 
 const baselineParams = computed<Record<string, unknown>>(() =>
@@ -227,6 +250,41 @@ function firstJobRef(run: TaskRun | null): string | null {
   return stage && job ? `${stage.key}::${job.key}` : null;
 }
 
+function resolveSaveOption(params?: Record<string, unknown> | null): string {
+  return String(params?.save_option ?? params?.save_data_option ?? "")
+    .trim()
+    .toLowerCase();
+}
+
+function preferredDataMode(taskSlug?: string | null, saveOption?: string | null): DataBrowseMode {
+  if (taskSlug === "creator_outreach") return "sqlite";
+  return ["json", "csv", "excel"].includes(String(saveOption ?? "").toLowerCase()) ? "files" : "sqlite";
+}
+
+function preferredFileType(saveOption?: string | null): string {
+  const normalized = String(saveOption ?? "").toLowerCase();
+  if (normalized === "json" || normalized === "csv") return normalized;
+  return "";
+}
+
+function resolveRunPlatforms(run: TaskRun | null): string[] {
+  if (!run) return [];
+  const rawPlatforms = run.normalized_params.platforms;
+  if (Array.isArray(rawPlatforms)) {
+    return rawPlatforms
+      .map((platform) => String(platform).trim())
+      .filter(Boolean);
+  }
+  const singlePlatform = String(run.normalized_params.platform ?? "").trim();
+  return singlePlatform ? [singlePlatform] : [];
+}
+
+function preferredDataTable(taskSlug?: string | null): string {
+  if (taskSlug === "creator_outreach") return "outreach_candidates";
+  if (taskSlug === "vibe_coding") return "vibe_content_scores";
+  return "crawl_observations";
+}
+
 function ensureSelectedConfigGroup() {
   if (!groupedFields.value.length) {
     selectedConfigGroup.value = "";
@@ -282,6 +340,12 @@ async function initialize() {
     }
 
     selectedRunId.value = loadedActiveRun?.id ?? loadedRuns[0]?.id ?? null;
+    const initialRun = loadedActiveRun ?? loadedRuns[0] ?? null;
+    if (initialRun) {
+      applyRunDataContext(initialRun);
+    } else {
+      selectedDataMode.value = preferredDataMode(initialTaskSlug, resolveSaveOption(formParams.value));
+    }
     if (selectedRunId.value) {
       logs.value = await fetchRunLogs(selectedRunId.value, 1000);
     }
@@ -344,6 +408,54 @@ async function loadData() {
   }
 }
 
+async function loadDataFiles() {
+  isFileLoading.value = true;
+  try {
+    dataFiles.value = await fetchDataFiles({
+      platform: dataFileFilters.value.platform || undefined,
+      file_type: dataFileFilters.value.file_type || undefined,
+    });
+
+    const nextSelectedPath =
+      dataFiles.value.find((file) => file.path === selectedDataFilePath.value)?.path ??
+      dataFiles.value[0]?.path ??
+      null;
+
+    if (!nextSelectedPath) {
+      selectedDataFilePath.value = null;
+      selectedDataFilePreview.value = null;
+      return;
+    }
+
+    if (nextSelectedPath !== selectedDataFilePath.value) {
+      selectedDataFilePath.value = nextSelectedPath;
+      return;
+    }
+
+    await loadSelectedFilePreview(nextSelectedPath);
+  } catch (error) {
+    errorMessage.value = (error as Error).message;
+  } finally {
+    isFileLoading.value = false;
+  }
+}
+
+async function loadSelectedFilePreview(filePath = selectedDataFilePath.value) {
+  if (!filePath) {
+    selectedDataFilePreview.value = null;
+    return;
+  }
+  isFileLoading.value = true;
+  try {
+    selectedDataFilePreview.value = await fetchDataFilePreview(filePath, 100);
+  } catch (error) {
+    selectedDataFilePreview.value = null;
+    errorMessage.value = (error as Error).message;
+  } finally {
+    isFileLoading.value = false;
+  }
+}
+
 async function openDataRow(row: SqliteRow) {
   try {
     selectedDataRow.value = await fetchSqliteRow(dataFilters.value.table, Number(row.id));
@@ -356,6 +468,13 @@ function scheduleDataLoad() {
   if (dataTimer) window.clearTimeout(dataTimer);
   dataTimer = window.setTimeout(() => {
     void loadData();
+  }, 200);
+}
+
+function scheduleFileLoad() {
+  if (fileTimer) window.clearTimeout(fileTimer);
+  fileTimer = window.setTimeout(() => {
+    void loadDataFiles();
   }, 200);
 }
 
@@ -534,7 +653,11 @@ async function handleInitSqlite() {
     sqliteStatus.value = await initSqlite();
     await refreshSystem();
     if (selectedMainTab.value === "data") {
-      await loadData();
+      if (selectedDataMode.value === "sqlite") {
+        await loadData();
+      } else {
+        await loadDataFiles();
+      }
     }
     message.value = "SQLite 已初始化";
   } catch (error) {
@@ -542,6 +665,57 @@ async function handleInitSqlite() {
   } finally {
     isInitializingSqlite.value = false;
   }
+}
+
+function applyRunDataContext(run: TaskRun) {
+  const saveOption = resolveSaveOption(run.normalized_params);
+  const runPlatforms = resolveRunPlatforms(run);
+  selectedDataMode.value = preferredDataMode(run.task_slug, saveOption);
+
+  dataFilters.value = {
+    ...dataFilters.value,
+    table: preferredDataTable(run.task_slug),
+    run_id: run.id,
+    task_slug: run.task_slug,
+    platform: "",
+    entity_type: "",
+    clean_status: "",
+    q: "",
+    offset: 0,
+  };
+  selectedDataRow.value = null;
+
+  dataFileFilters.value = {
+    ...dataFileFilters.value,
+    platform: runPlatforms.length === 1 ? runPlatforms[0] : "",
+    file_type: preferredFileType(saveOption),
+    q: "",
+  };
+  selectedDataFilePath.value = null;
+  selectedDataFilePreview.value = null;
+}
+
+function clearRunDataContext() {
+  dataFilters.value = {
+    ...dataFilters.value,
+    run_id: "",
+    task_slug: "",
+    platform: "",
+    entity_type: "",
+    clean_status: "",
+    q: "",
+    offset: 0,
+  };
+  selectedDataRow.value = null;
+}
+
+function handleSelectRun(runId: string) {
+  const run = findRun(runId);
+  selectedRunId.value = runId;
+  selectedExecutionJobRef.value = firstJobRef(run);
+  if (!run) return;
+  applyRunDataContext(run);
+  selectedMainTab.value = run.status === "running" ? "execution" : "data";
 }
 
 function updateField(key: string, value: unknown) {
@@ -562,6 +736,17 @@ function updateDataFilter(key: keyof SqliteRowFilters, value: string | number) {
   }
 }
 
+function updateFileFilter(key: keyof DataFileFilters, value: string) {
+  dataFileFilters.value = {
+    ...dataFileFilters.value,
+    [key]: value,
+  };
+  if (key === "platform" || key === "file_type") {
+    selectedDataFilePath.value = null;
+    selectedDataFilePreview.value = null;
+  }
+}
+
 watch(
   groupedFields,
   () => {
@@ -574,6 +759,9 @@ watch(
   formParams,
   () => {
     saveDraft();
+    if (!selectedRunId.value) {
+      selectedDataMode.value = preferredDataMode(selectedTaskSlug.value, resolveSaveOption(formParams.value));
+    }
     void triggerPreview();
   },
   { deep: true },
@@ -596,7 +784,11 @@ watch(
   selectedMainTab,
   (tab) => {
     if (tab === "data") {
-      scheduleDataLoad();
+      if (selectedDataMode.value === "sqlite") {
+        scheduleDataLoad();
+      } else {
+        scheduleFileLoad();
+      }
     }
     if (tab === "system") {
       void refreshSystem();
@@ -608,11 +800,41 @@ watch(
 watch(
   dataFilters,
   () => {
-    if (selectedMainTab.value === "data") {
+    if (selectedMainTab.value === "data" && selectedDataMode.value === "sqlite") {
       scheduleDataLoad();
     }
   },
   { deep: true },
+);
+
+watch(
+  () => [dataFileFilters.value.platform, dataFileFilters.value.file_type],
+  () => {
+    if (selectedMainTab.value === "data" && selectedDataMode.value === "files") {
+      scheduleFileLoad();
+    }
+  },
+);
+
+watch(
+  selectedDataMode,
+  (mode) => {
+    if (selectedMainTab.value !== "data") return;
+    if (mode === "sqlite") {
+      scheduleDataLoad();
+      return;
+    }
+    scheduleFileLoad();
+  },
+);
+
+watch(
+  selectedDataFilePath,
+  (filePath) => {
+    if (selectedMainTab.value === "data" && selectedDataMode.value === "files") {
+      void loadSelectedFilePreview(filePath);
+    }
+  },
 );
 
 onMounted(() => {
@@ -625,6 +847,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (previewTimer) window.clearTimeout(previewTimer);
   if (dataTimer) window.clearTimeout(dataTimer);
+  if (fileTimer) window.clearTimeout(fileTimer);
   if (reconnectTimer) window.clearTimeout(reconnectTimer);
   if (clockTimer) window.clearInterval(clockTimer);
   socket?.close();
@@ -643,7 +866,7 @@ onBeforeUnmount(() => {
       :socket-state="socketState"
       :sqlite-ready="Boolean(sqliteStatus?.initialized)"
       @select-task="handleSelectTask"
-      @select-run="selectedRunId = $event"
+      @select-run="handleSelectRun"
     />
 
     <main class="workspace-main">
@@ -727,17 +950,31 @@ onBeforeUnmount(() => {
 
       <DataTab
         v-else-if="selectedMainTab === 'data'"
+        :mode="selectedDataMode"
         :tables="sqliteTables"
         :supported-tables="sqliteSupportedTables"
         :filters="dataFilters"
+        :file-filters="dataFileFilters"
+        :files="dataFiles"
+        :selected-file-path="selectedDataFilePath"
+        :file-preview="selectedDataFilePreview"
         :stats="sqliteStats"
         :rows="sqliteRows"
         :selected-row="selectedDataRow"
+        :selected-run="selectedRun"
         :loading="isDataLoading"
+        :file-loading="isFileLoading"
+        :sqlite-path="sqliteStatus?.path ?? 'runtime/data/sqlite.db'"
         @update-filter="updateDataFilter"
+        @update-file-filter="updateFileFilter"
+        @switch-mode="selectedDataMode = $event"
+        @select-file="selectedDataFilePath = $event"
         @refresh="loadData"
+        @refresh-files="loadDataFiles"
         @open-row="openDataRow"
         @close-row="selectedDataRow = null"
+        @focus-execution="selectedMainTab = 'execution'"
+        @clear-run-filter="clearRunDataContext"
       />
 
       <SystemTab

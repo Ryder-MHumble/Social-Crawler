@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -219,6 +220,82 @@ def test_sentiment_monitor_preview_builds_keyword_and_creator_stages(tmp_path: P
     assert _command_value(creator_command, "--creator_id") == "creator_1,creator_3"
 
 
+def test_sentiment_monitor_qrcode_login_forces_headful_browser(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+
+    preview = service.preview_task(
+        "sentiment_monitor",
+        params={
+            "platforms": ["xhs"],
+            "keywords": "北京中关村学院",
+            "enable_keyword_search": True,
+            "enable_account_crawl": False,
+            "login_type": "qrcode",
+            "headless": True,
+            "save_option": "json",
+        },
+    )
+
+    normalized = preview["normalized_params"]
+    assert normalized["login_type"] == "qrcode"
+    assert normalized["headless"] is False
+
+    command = preview["spec"]["stages"][0]["jobs"][0]["command"]
+    assert _command_value(command, "--lt") == "qrcode"
+    assert _command_value(command, "--headless") == "false"
+
+
+def test_sentiment_monitor_cookie_login_uses_inline_cookie(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+
+    preview = service.preview_task(
+        "sentiment_monitor",
+        params={
+            "platforms": ["xhs"],
+            "keywords": "北京中关村学院",
+            "enable_keyword_search": True,
+            "enable_account_crawl": False,
+            "login_type": "cookie",
+            "cookies": "a=1; b=2",
+            "save_option": "json",
+            "headless": True,
+        },
+    )
+
+    normalized = preview["normalized_params"]
+    assert normalized["login_type"] == "cookie"
+    assert normalized["cookies"] == "a=1; b=2"
+
+    command = preview["spec"]["stages"][0]["jobs"][0]["command"]
+    assert _command_value(command, "--lt") == "cookie"
+    assert _command_value(command, "--cookies") == "a=1; b=2"
+
+
+def test_sentiment_monitor_cookie_login_requires_cookie_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _build_service(tmp_path)
+    fake_cookie_module = types.ModuleType("cookies_config")
+    fake_cookie_module.get_cookie = lambda _platform: ""
+    monkeypatch.setitem(sys.modules, "cookies_config", fake_cookie_module)
+
+    with pytest.raises(ValueError, match="已选择 Cookie 登录"):
+        service.preview_task(
+            "sentiment_monitor",
+            params={
+                "platforms": ["xhs"],
+                "keywords": "北京中关村学院",
+                "enable_keyword_search": True,
+                "enable_account_crawl": False,
+                "login_type": "cookie",
+                "cookies": "",
+                "save_option": "json",
+                "headless": True,
+            },
+        )
+
+
 def test_creator_outreach_defaults_and_dm_preset_are_yaml_backed(tmp_path: Path) -> None:
     service = _build_service(tmp_path)
 
@@ -260,7 +337,10 @@ def test_vibe_coding_defaults_and_creator_preset(tmp_path: Path) -> None:
     defaults = template["defaults"]
     assert defaults["enable_keyword_search"] is True
     assert defaults["enable_account_crawl"] is False
+    assert defaults["save_option"] == "json"
     assert "vibe coding" in defaults["scenario_words"]
+    save_option_field = next(field for field in template["fields"] if field["key"] == "save_option")
+    assert {option["value"] for option in save_option_field["options"]} >= {"json", "sqlite"}
 
     preview = service.preview_task(
         "vibe_coding",
@@ -270,6 +350,7 @@ def test_vibe_coding_defaults_and_creator_preset(tmp_path: Path) -> None:
     normalized = preview["normalized_params"]
     assert normalized["enable_keyword_search"] is False
     assert normalized["enable_account_crawl"] is True
+    assert normalized["save_option"] == "json"
     assert normalized["specified_account_ids"]
 
     stages = preview["spec"]["stages"]
@@ -277,6 +358,33 @@ def test_vibe_coding_defaults_and_creator_preset(tmp_path: Path) -> None:
     command = stages[0]["jobs"][0]["command"]
     assert _command_value(command, "--type") == "creator"
     assert _command_value(command, "--creator_id") == normalized["specified_account_ids"]
+    assert _command_value(command, "--save_data_option") == "json"
+
+
+def test_vibe_coding_save_option_normalization_and_command_passthrough(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+
+    preview = service.preview_task(
+        "vibe_coding",
+        params={
+            "platforms": ["xhs"],
+            "keywords": "cursor ai编程",
+            "enable_keyword_search": True,
+            "enable_account_crawl": True,
+            "specified_account_ids": "208259",
+            "save_option": "invalid_option",
+        },
+    )
+
+    normalized = preview["normalized_params"]
+    assert normalized["save_option"] == "json"
+
+    stages = {stage["key"]: stage for stage in preview["spec"]["stages"]}
+    keyword_command = stages["vibe_keyword_parallel_crawl"]["jobs"][0]["command"]
+    creator_command = stages["vibe_creator_parallel_crawl"]["jobs"][0]["command"]
+
+    assert _command_value(keyword_command, "--save-data-option") == "json"
+    assert _command_value(creator_command, "--save_data_option") == "json"
 
 
 def test_alias_params_override_preset_values(tmp_path: Path) -> None:
