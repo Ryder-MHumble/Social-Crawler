@@ -54,6 +54,12 @@ class BilibiliLogin(AbstractLogin):
     async def begin(self):
         """Start login bilibili"""
         utils.logger.info("[BilibiliLogin.begin] Begin login Bilibili ...")
+        try:
+            if await self.check_login_state():
+                utils.logger.info("[BilibiliLogin.begin] Login already active, skip login flow.")
+                return
+        except Exception:
+            pass
         if config.LOGIN_TYPE == "qrcode":
             await self.login_by_qrcode()
         elif config.LOGIN_TYPE == "phone":

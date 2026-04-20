@@ -45,6 +45,7 @@ def _build_initial_snapshot(
                 "key": stage.key,
                 "name": stage.name,
                 "concurrent": stage.concurrent,
+                "max_parallel": stage.max_parallel,
                 "abort_on_failure": stage.abort_on_failure,
                 "status": "waiting",
                 "jobs": [

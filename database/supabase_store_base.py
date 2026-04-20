@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, Optional, Set
 
 import config
 from database.supabase_client import get_supabase, reset_supabase
+from database.relevance_filter import is_content_relevant
 from tools import utils
 from tools.time_util import get_current_timestamp
 
@@ -159,24 +160,15 @@ class SupabaseStoreBase:
         if not getattr(config, "ENABLE_RELEVANCE_FILTER", False):
             return True
 
-        # Combine title + description for matching
-        text = f"{title or ''} {description or ''}".lower()
-
-        # Exclusion keywords take priority — reject if any match
-        exclude_keywords = getattr(config, "RELEVANCE_EXCLUDE_KEYWORDS", [])
-        for keyword in exclude_keywords:
-            if keyword.lower() in text:
-                return False
-
-        must_contain = getattr(config, "RELEVANCE_MUST_CONTAIN", [])
-        if not must_contain:
-            return True
-
-        for keyword in must_contain:
-            if keyword.lower() in text:
-                return True
-
-        return False
+        return is_content_relevant(
+            title=title,
+            description=description,
+            must_contain=getattr(config, "RELEVANCE_MUST_CONTAIN", []),
+            exclude_keywords=getattr(config, "RELEVANCE_EXCLUDE_KEYWORDS", []),
+            match_mode=getattr(config, "RELEVANCE_MATCH_MODE", "loose"),
+            min_match_chars=getattr(config, "RELEVANCE_MIN_MATCH_CHARS", 3),
+            min_match_ratio=getattr(config, "RELEVANCE_MIN_MATCH_RATIO", 0.3),
+        )
 
     # ------------------------------------------------------------------
     # Content (posts / videos / notes / articles)

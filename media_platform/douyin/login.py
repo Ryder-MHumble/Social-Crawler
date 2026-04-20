@@ -55,6 +55,12 @@ class DouYinLogin(AbstractLogin):
             Start login douyin website
             The verification accuracy of the slider verification is not very good... If there are no special requirements, it is recommended not to use Douyin login, or use cookie login
         """
+        try:
+            if await self.check_login_state():
+                utils.logger.info("[DouYinLogin.begin] Login already active, skip login flow.")
+                return
+        except Exception:
+            pass
 
         # popup login dialog
         await self.popup_login_dialog()

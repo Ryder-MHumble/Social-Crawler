@@ -220,6 +220,28 @@ def test_task_and_preset_crud(client_with_real_service: TestClient) -> None:
     assert delete_res.status_code == 200
 
 
+def test_preview_response_exposes_stage_max_parallel(client_with_real_service: TestClient) -> None:
+    preview_res = client_with_real_service.post(
+        "/api/tasks/sentiment_monitor/preview",
+        json={
+            "params": {
+                "platforms": ["xhs", "wb"],
+                "keywords": "alpha,beta",
+                "enable_keyword_search": True,
+                "enable_account_crawl": False,
+                "keyword_job_mode": "single",
+                "keyword_job_max_parallel": 4,
+                "save_option": "json",
+            }
+        },
+    )
+
+    assert preview_res.status_code == 200
+    stage = preview_res.json()["spec"]["stages"][0]
+    assert stage["max_parallel"] == 4
+    assert len(stage["jobs"]) == 4
+
+
 def test_run_start_stop_and_single_active_limit(
     client_with_dummy_service: TestClient,
     dummy_service: TaskCenterService,

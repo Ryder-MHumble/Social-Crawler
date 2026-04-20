@@ -45,6 +45,8 @@ class CDPBrowserManager:
         self.debug_port: Optional[int] = None
         self._cleanup_registered = False
         self._remote_mode: bool = False
+        self._owns_remote_context: bool = False
+        self._remote_initial_page_guids: set[str] = set()
 
     def _register_cleanup_handlers(self):
         """
@@ -108,6 +110,8 @@ class CDPBrowserManager:
         skip the local launch flow and connect to a remote browser directly.
         """
         try:
+            self._owns_remote_context = False
+            self._remote_initial_page_guids = set()
             remote_ws_url = (getattr(config, "CDP_REMOTE_WS_URL", "") or "").strip()
             if remote_ws_url:
                 self._remote_mode = True
@@ -315,6 +319,13 @@ class CDPBrowserManager:
         if contexts:
             # Use existing first context
             browser_context = contexts[0]
+            if self._remote_mode:
+                self._owns_remote_context = False
+                self._remote_initial_page_guids = {
+                    self._page_guid(page)
+                    for page in browser_context.pages
+                    if self._page_guid(page)
+                }
             utils.logger.info("[CDPBrowserManager] Using existing browser context")
         else:
             # Create new context
@@ -342,9 +353,35 @@ class CDPBrowserManager:
                     )
 
             browser_context = await self.browser.new_context(**context_options)
+            if self._remote_mode:
+                self._owns_remote_context = True
+                self._remote_initial_page_guids = set()
             utils.logger.info("[CDPBrowserManager] Created new browser context")
 
         return browser_context
+
+    @staticmethod
+    def _page_guid(page) -> str:
+        try:
+            return str(page._impl_obj._guid)
+        except Exception:
+            return ""
+
+    async def _cleanup_remote_pages(self):
+        if not self.browser_context:
+            return
+        for page in list(self.browser_context.pages):
+            page_guid = self._page_guid(page)
+            if page_guid and page_guid in self._remote_initial_page_guids:
+                continue
+            try:
+                await page.close()
+            except Exception as page_error:
+                error_msg = str(page_error).lower()
+                if "closed" not in error_msg and "disconnected" not in error_msg:
+                    utils.logger.warning(
+                        f"[CDPBrowserManager] Failed to close remote crawler page: {page_error}"
+                    )
 
     async def add_stealth_script(self, script_path: str = "libs/stealth.min.js"):
         """
@@ -401,8 +438,12 @@ class CDPBrowserManager:
                     try:
                         pages = self.browser_context.pages
                         if pages is not None:
-                            await self.browser_context.close()
-                            utils.logger.info("[CDPBrowserManager] Browser context closed")
+                            if self._remote_mode and not self._owns_remote_context:
+                                await self._cleanup_remote_pages()
+                                utils.logger.info("[CDPBrowserManager] Remote crawler pages closed")
+                            else:
+                                await self.browser_context.close()
+                                utils.logger.info("[CDPBrowserManager] Browser context closed")
                     except:
                         utils.logger.debug("[CDPBrowserManager] Browser context already closed")
                 except Exception as context_error:
@@ -416,6 +457,8 @@ class CDPBrowserManager:
                         utils.logger.debug(f"[CDPBrowserManager] Browser context already closed: {context_error}")
                 finally:
                     self.browser_context = None
+                    self._owns_remote_context = False
+                    self._remote_initial_page_guids = set()
 
             # Disconnect browser
             if self.browser:

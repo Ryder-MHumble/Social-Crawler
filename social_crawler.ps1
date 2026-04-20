@@ -2,23 +2,37 @@ $ErrorActionPreference = "Stop"
 
 $RootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $RootDir
+$LauncherDir = "scripts/launcher"
 
 function Show-Usage {
     @"
-Social-Crawler Unified Launcher (Windows PowerShell)
+Social-Crawler 统一入口 (Windows PowerShell)
 
-Usage:
-  .\social_crawler.ps1 dev  <start|stop|restart|status|logs> [--attach|-f]
-  .\social_crawler.ps1 prod <start|stop|restart|status|logs> [--attach|-f]
-  .\social_crawler.ps1 task [run_tasks.py args...]
+直接运行:
+  .\social_crawler.ps1
   .\social_crawler.ps1 menu
   .\social_crawler.ps1 help
 
-Examples:
+开发环境:
   .\social_crawler.ps1 dev start
+  .\social_crawler.ps1 dev stop
+  .\social_crawler.ps1 dev status
   .\social_crawler.ps1 dev logs -f
-  .\social_crawler.ps1 prod restart
+
+生产环境:
+  .\social_crawler.ps1 prod start
+  .\social_crawler.ps1 prod stop
+  .\social_crawler.ps1 prod status
+  .\social_crawler.ps1 prod logs -f
+
+任务执行:
   .\social_crawler.ps1 task --list
+  .\social_crawler.ps1 task sentiment_monitor
+
+说明:
+  - 不带参数时会打印帮助；在交互终端中会进入菜单
+  - dev/prod 真实实现已收拢到 scripts/launcher/
+  - 根目录对外只保留这一个 PowerShell 入口
 "@ | Write-Host
 }
 
@@ -49,17 +63,18 @@ function Ensure-Bash {
 
 function Invoke-ShBridge {
     param(
-        [string]$ScriptName,
+        [string]$ScriptPath,
         [string[]]$ForwardArgs
     )
     Ensure-Bash
 
     $escapedRoot = $RootDir.Replace("\", "/")
+    $escapedHint = ".\\social_crawler.ps1" -replace "'", "'\\''"
     $joinedArgs = ""
     if ($ForwardArgs.Count -gt 0) {
         $joinedArgs = " " + (($ForwardArgs | ForEach-Object { "'" + ($_ -replace "'", "'\\''") + "'" }) -join " ")
     }
-    $cmd = "cd '$escapedRoot' && ./$ScriptName$joinedArgs"
+    $cmd = "cd '$escapedRoot' && SOCIAL_CRAWLER_CMD_HINT='$escapedHint' ./$ScriptPath$joinedArgs"
     & bash -lc $cmd
     exit $LASTEXITCODE
 }
@@ -68,27 +83,27 @@ function Show-Menu {
     while ($true) {
         @"
 
-Choose an action:
-  1) dev start
-  2) dev stop
-  3) dev logs -f
-  4) prod start
-  5) prod stop
-  6) prod logs -f
-  7) task --list
-  8) task (custom args)
-  9) help
+请选择操作:
+  1) 开发环境启动
+  2) 开发环境关闭
+  3) 开发环境日志
+  4) 生产环境启动
+  5) 生产环境关闭
+  6) 生产环境日志
+  7) 查看任务列表
+  8) 自定义任务参数
+  9) 查看帮助
   0) exit
 "@ | Write-Host
 
         $choice = Read-Host "> "
         switch ($choice) {
-            "1" { Invoke-ShBridge -ScriptName "start_dev_local.sh" -ForwardArgs @("start") }
-            "2" { Invoke-ShBridge -ScriptName "start_dev_local.sh" -ForwardArgs @("stop") }
-            "3" { Invoke-ShBridge -ScriptName "start_dev_local.sh" -ForwardArgs @("logs", "-f") }
-            "4" { Invoke-ShBridge -ScriptName "start_prod_server.sh" -ForwardArgs @("start") }
-            "5" { Invoke-ShBridge -ScriptName "start_prod_server.sh" -ForwardArgs @("stop") }
-            "6" { Invoke-ShBridge -ScriptName "start_prod_server.sh" -ForwardArgs @("logs", "-f") }
+            "1" { Invoke-ShBridge -ScriptPath "$LauncherDir/dev.sh" -ForwardArgs @("start") }
+            "2" { Invoke-ShBridge -ScriptPath "$LauncherDir/dev.sh" -ForwardArgs @("stop") }
+            "3" { Invoke-ShBridge -ScriptPath "$LauncherDir/dev.sh" -ForwardArgs @("logs", "-f") }
+            "4" { Invoke-ShBridge -ScriptPath "$LauncherDir/prod.sh" -ForwardArgs @("start") }
+            "5" { Invoke-ShBridge -ScriptPath "$LauncherDir/prod.sh" -ForwardArgs @("stop") }
+            "6" { Invoke-ShBridge -ScriptPath "$LauncherDir/prod.sh" -ForwardArgs @("logs", "-f") }
             "7" { Invoke-TaskRunner -TaskArgs @("--list") }
             "8" {
                 $raw = Read-Host "run_tasks args"
@@ -98,7 +113,7 @@ Choose an action:
             }
             "9" { Show-Usage }
             "0" { exit 0 }
-            default { Write-Host "Unknown choice: $choice" }
+            default { Write-Host "未知选项: $choice" }
         }
     }
 }
@@ -120,11 +135,11 @@ if ($args.Count -gt 1) {
 switch ($action) {
     "dev" {
         if ($rest.Count -eq 0) { Show-Usage; exit 1 }
-        Invoke-ShBridge -ScriptName "start_dev_local.sh" -ForwardArgs $rest
+        Invoke-ShBridge -ScriptPath "$LauncherDir/dev.sh" -ForwardArgs $rest
     }
     "prod" {
         if ($rest.Count -eq 0) { Show-Usage; exit 1 }
-        Invoke-ShBridge -ScriptName "start_prod_server.sh" -ForwardArgs $rest
+        Invoke-ShBridge -ScriptPath "$LauncherDir/prod.sh" -ForwardArgs $rest
     }
     "task" {
         Invoke-TaskRunner -TaskArgs $rest
@@ -142,7 +157,7 @@ switch ($action) {
         Show-Usage
     }
     default {
-        Write-Host "Unknown action: $action"
+        Write-Host "未知操作: $action"
         Show-Usage
         exit 1
     }

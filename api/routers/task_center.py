@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..schemas.task_center import (
@@ -26,6 +28,13 @@ def _handle_error(exc: Exception) -> HTTPException:
 @router.get("/tasks")
 async def list_tasks(service: TaskCenterService = Depends(get_task_center_service)):
     return {"tasks": service.list_templates()}
+
+
+@router.get("/browsermint/sessions")
+async def list_browsermint_sessions(
+    service: TaskCenterService = Depends(get_task_center_service),
+):
+    return service.list_browsermint_sessions()
 
 
 @router.get("/tasks/{slug}")
@@ -112,7 +121,8 @@ async def start_run(
     service: TaskCenterService = Depends(get_task_center_service),
 ):
     try:
-        run = service.start_run(
+        run = await asyncio.to_thread(
+            service.start_run,
             task_slug=request.task_slug,
             params=request.params,
             preset_id=request.preset_id,

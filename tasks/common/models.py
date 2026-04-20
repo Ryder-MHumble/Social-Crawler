@@ -19,6 +19,7 @@ class TaskStage:
     name: str
     jobs: list[TaskJob]
     concurrent: bool = True
+    max_parallel: int | None = None
     abort_on_failure: bool = False
 
 
@@ -31,4 +32,3 @@ class TaskSpec:
     welcome_lines: list[str]
     stages: list[TaskStage]
     aliases: list[str] = field(default_factory=list)
-

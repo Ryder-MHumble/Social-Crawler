@@ -138,3 +138,144 @@ def test_watchdog_marks_non_zero_exit_without_timeout(sqlite_env, tmp_path: Path
     assert job.exit_code == 3
     assert job.watchdog_status == "completed"
     assert job.termination_reason == ""
+
+
+def test_runtime_honors_stage_max_parallel(sqlite_env, tmp_path: Path) -> None:
+    command = [
+        sys.executable,
+        "-u",
+        "-c",
+        "import time; print('start'); time.sleep(0.4); print('done')",
+    ]
+    task = TaskSpec(
+        slug="watchdog_parallel_limit",
+        title="Watchdog Parallel Limit",
+        short_desc="parallel",
+        capabilities=["test"],
+        welcome_lines=["parallel"],
+        stages=[
+            TaskStage(
+                key="parallel_stage",
+                name="Parallel Stage",
+                jobs=[
+                    TaskJob(key=f"job_{index}", name=f"Job {index}", command=command, cwd=tmp_path)
+                    for index in range(3)
+                ],
+                concurrent=True,
+                max_parallel=2,
+                abort_on_failure=False,
+            )
+        ],
+        aliases=[],
+    )
+
+    executor = TaskRuntimeExecutor(
+        project_root=tmp_path,
+        logs_root=tmp_path / "logs",
+        refresh_seconds=0.05,
+        job_start_timeout_sec=3,
+        job_stall_timeout_sec=3,
+        terminate_grace_sec=1,
+    )
+    context = executor.execute(
+        task,
+        normalized_params={},
+        run_id="watchdog_parallel_limit_run",
+    )
+
+    assert context.status == "success"
+    jobs = context.stages[0].jobs
+    assert [job.status for job in jobs] == ["success", "success", "success"]
+    assert jobs[2].started_at is not None
+    assert jobs[0].started_at is not None
+    assert jobs[2].started_at - jobs[0].started_at >= 0.25
+
+
+def test_runtime_skips_queued_jobs_when_abort_on_failure_is_enabled(sqlite_env, tmp_path: Path) -> None:
+    commands = [
+        [sys.executable, "-u", "-c", "import sys; print('boom'); sys.exit(2)"],
+        [sys.executable, "-u", "-c", "import time; print('wait'); time.sleep(0.4); print('done')"],
+        [sys.executable, "-u", "-c", "import time; print('wait'); time.sleep(0.4); print('done')"],
+    ]
+    task = TaskSpec(
+        slug="watchdog_abort_on_failure",
+        title="Watchdog Abort On Failure",
+        short_desc="parallel",
+        capabilities=["test"],
+        welcome_lines=["parallel"],
+        stages=[
+            TaskStage(
+                key="parallel_stage",
+                name="Parallel Stage",
+                jobs=[
+                    TaskJob(key=f"job_{index}", name=f"Job {index}", command=command, cwd=tmp_path)
+                    for index, command in enumerate(commands)
+                ],
+                concurrent=True,
+                max_parallel=1,
+                abort_on_failure=True,
+            )
+        ],
+        aliases=[],
+    )
+
+    executor = TaskRuntimeExecutor(
+        project_root=tmp_path,
+        logs_root=tmp_path / "logs",
+        refresh_seconds=0.05,
+        job_start_timeout_sec=3,
+        job_stall_timeout_sec=3,
+        terminate_grace_sec=1,
+    )
+    context = executor.execute(task, normalized_params={}, run_id="watchdog_abort_on_failure_run")
+
+    assert context.status == "failed"
+    jobs = context.stages[0].jobs
+    assert jobs[0].status == "failed"
+    assert jobs[1].status == "skipped"
+    assert jobs[2].status == "skipped"
+
+
+def test_runtime_continues_queued_jobs_when_abort_on_failure_is_disabled(sqlite_env, tmp_path: Path) -> None:
+    commands = [
+        [sys.executable, "-u", "-c", "import sys; print('boom'); sys.exit(2)"],
+        [sys.executable, "-u", "-c", "import time; print('ok-1'); time.sleep(0.1); print('done-1')"],
+        [sys.executable, "-u", "-c", "import time; print('ok-2'); time.sleep(0.1); print('done-2')"],
+    ]
+    task = TaskSpec(
+        slug="watchdog_continue_on_failure",
+        title="Watchdog Continue On Failure",
+        short_desc="parallel",
+        capabilities=["test"],
+        welcome_lines=["parallel"],
+        stages=[
+            TaskStage(
+                key="parallel_stage",
+                name="Parallel Stage",
+                jobs=[
+                    TaskJob(key=f"job_{index}", name=f"Job {index}", command=command, cwd=tmp_path)
+                    for index, command in enumerate(commands)
+                ],
+                concurrent=True,
+                max_parallel=1,
+                abort_on_failure=False,
+            )
+        ],
+        aliases=[],
+    )
+
+    executor = TaskRuntimeExecutor(
+        project_root=tmp_path,
+        logs_root=tmp_path / "logs",
+        refresh_seconds=0.05,
+        job_start_timeout_sec=3,
+        job_stall_timeout_sec=3,
+        terminate_grace_sec=1,
+    )
+    context = executor.execute(task, normalized_params={}, run_id="watchdog_continue_on_failure_run")
+
+    assert context.status == "failed"
+    jobs = context.stages[0].jobs
+    assert jobs[0].status == "failed"
+    assert jobs[1].status == "success"
+    assert jobs[2].status == "success"

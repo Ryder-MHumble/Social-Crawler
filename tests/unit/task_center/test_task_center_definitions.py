@@ -40,12 +40,11 @@ def test_xhs_posts_only_preset_resolves_correctly(tmp_path: Path) -> None:
     assert "中关村学院 投诉" in normalized["keywords"]
 
     jobs = preview["spec"]["stages"][0]["jobs"]
-    assert len(jobs) == 1
-    command = jobs[0]["command"]
-    assert "--platform" in command and _command_value(command, "--platform") == "xhs"
-    assert "--max_notes_count" in command and _command_value(command, "--max_notes_count") == "30"
-    assert "--get_comment" in command and _command_value(command, "--get_comment") == "false"
-    assert "--get_sub_comment" in command and _command_value(command, "--get_sub_comment") == "false"
+    assert len(jobs) >= 1
+    assert all(_command_value(job["command"], "--platform") == "xhs" for job in jobs)
+    assert all(_command_value(job["command"], "--max_notes_count") == "30" for job in jobs)
+    assert all(_command_value(job["command"], "--get_comment") == "false" for job in jobs)
+    assert all(_command_value(job["command"], "--get_sub_comment") == "false" for job in jobs)
 
 
 def test_media_daily_report_preset_resolves_correctly(tmp_path: Path) -> None:
@@ -70,16 +69,15 @@ def test_media_daily_report_preset_resolves_correctly(tmp_path: Path) -> None:
     assert "北京中关村学院 怎么样" in normalized["keywords"]
 
     jobs = preview["spec"]["stages"][0]["jobs"]
-    assert len(jobs) == 1
-    command = jobs[0]["command"]
-    assert "--platform" in command and _command_value(command, "--platform") == "xhs"
-    assert "--max_notes_count" in command and _command_value(command, "--max_notes_count") == "30"
-    assert "--save_data_option" in command and _command_value(command, "--save_data_option") == "json"
-    assert "--get_comment" in command and _command_value(command, "--get_comment") == "false"
-    assert "--get_sub_comment" in command and _command_value(command, "--get_sub_comment") == "false"
-    assert "--keywords" in command
-    assert "北京中关村学院" in _command_value(command, "--keywords")
-    assert "中关村学院 投诉" in _command_value(command, "--keywords")
+    assert len(jobs) >= 1
+    assert all(_command_value(job["command"], "--platform") == "xhs" for job in jobs)
+    assert all(_command_value(job["command"], "--max_notes_count") == "30" for job in jobs)
+    assert all(_command_value(job["command"], "--save_data_option") == "json" for job in jobs)
+    assert all(_command_value(job["command"], "--get_comment") == "false" for job in jobs)
+    assert all(_command_value(job["command"], "--get_sub_comment") == "false" for job in jobs)
+    keyword_payload = ",".join(_command_value(job["command"], "--keywords") for job in jobs)
+    assert "北京中关村学院" in keyword_payload
+    assert "中关村学院 投诉" in keyword_payload
 
 
 def test_media_daily_zgca_risk_preset_targets_supported_platforms(tmp_path: Path) -> None:
@@ -218,6 +216,69 @@ def test_sentiment_monitor_preview_builds_keyword_and_creator_stages(tmp_path: P
     creator_command = stages[1]["jobs"][0]["command"]
     assert _command_value(creator_command, "--type") == "creator"
     assert _command_value(creator_command, "--creator_id") == "creator_1,creator_3"
+
+
+def test_sentiment_monitor_keyword_job_split_expands_platform_keyword_matrix(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+
+    preview = service.preview_task(
+        "sentiment_monitor",
+        params={
+            "platforms": ["xhs", "wb"],
+            "keywords": "alpha,beta",
+            "enable_keyword_search": True,
+            "enable_account_crawl": False,
+            "keyword_job_mode": "single",
+            "keyword_job_max_parallel": 4,
+            "save_option": "json",
+        },
+    )
+
+    stage = preview["spec"]["stages"][0]
+    assert stage["key"] == "sentiment_keyword_parallel_crawl"
+    assert stage["max_parallel"] == 4
+    assert len(stage["jobs"]) == 4
+    assert len({job["key"] for job in stage["jobs"]}) == 4
+    assert [_command_value(job["command"], "--platform") for job in stage["jobs"]] == [
+        "xhs",
+        "xhs",
+        "wb",
+        "wb",
+    ]
+    assert [_command_value(job["command"], "--keywords") for job in stage["jobs"]] == [
+        "alpha",
+        "beta",
+        "alpha",
+        "beta",
+    ]
+
+
+def test_sentiment_monitor_creator_job_chunking_splits_account_targets(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+
+    preview = service.preview_task(
+        "sentiment_monitor",
+        params={
+            "platforms": ["xhs"],
+            "enable_keyword_search": False,
+            "enable_account_crawl": True,
+            "specified_account_ids": "creator_1,creator_2,creator_3",
+            "creator_job_mode": "chunked",
+            "creator_job_chunk_size": 2,
+            "creator_job_max_parallel": 2,
+            "save_option": "json",
+        },
+    )
+
+    stage = preview["spec"]["stages"][0]
+    assert stage["key"] == "sentiment_creator_parallel_crawl"
+    assert stage["max_parallel"] == 2
+    assert len(stage["jobs"]) == 2
+    assert len({job["key"] for job in stage["jobs"]}) == 2
+    assert [_command_value(job["command"], "--creator_id") for job in stage["jobs"]] == [
+        "creator_1,creator_2",
+        "creator_3",
+    ]
 
 
 def test_sentiment_monitor_qrcode_login_forces_headful_browser(tmp_path: Path) -> None:
@@ -385,6 +446,36 @@ def test_vibe_coding_save_option_normalization_and_command_passthrough(tmp_path:
 
     assert _command_value(keyword_command, "--save-data-option") == "json"
     assert _command_value(creator_command, "--save_data_option") == "json"
+
+
+def test_vibe_coding_keyword_job_chunking_expands_keyword_jobs(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+
+    preview = service.preview_task(
+        "vibe_coding",
+        params={
+            "platforms": ["xhs"],
+            "keywords": "cursor,bolt,v0",
+            "keyword_whitelist": "",
+            "keyword_blacklist": "",
+            "scenario_words": "",
+            "enable_keyword_search": True,
+            "enable_account_crawl": False,
+            "keyword_job_mode": "chunked",
+            "keyword_job_chunk_size": 2,
+            "keyword_job_max_parallel": 2,
+        },
+    )
+
+    stage = preview["spec"]["stages"][0]
+    assert stage["key"] == "vibe_keyword_parallel_crawl"
+    assert stage["max_parallel"] == 2
+    assert len(stage["jobs"]) == 2
+    assert len({job["key"] for job in stage["jobs"]}) == 2
+    assert [_command_value(job["command"], "--search-keywords") for job in stage["jobs"]] == [
+        "cursor,bolt",
+        "v0",
+    ]
 
 
 def test_alias_params_override_preset_values(tmp_path: Path) -> None:

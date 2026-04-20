@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FRONTEND_DIR="$ROOT_DIR/frontend/task_center"
 DEFAULT_PUBLIC_HOST="10.1.132.4"
+SOCIAL_CRAWLER_CMD_HINT="${SOCIAL_CRAWLER_CMD_HINT:-./social_crawler.sh}"
+PROD_CMD="$SOCIAL_CRAWLER_CMD_HINT prod"
 
 API_HOST="${API_HOST:-0.0.0.0}"
 API_PORT="${API_PORT:-18080}"
@@ -60,12 +62,12 @@ step() {
 usage() {
   cat <<EOF
 Usage:
-  ./start_prod_server.sh start [--attach]
-  ./start_prod_server.sh stop
-  ./start_prod_server.sh restart [--attach]
-  ./start_prod_server.sh status
-  ./start_prod_server.sh logs [-f|--follow]
-  ./start_prod_server.sh help
+  $PROD_CMD start [--attach]
+  $PROD_CMD stop
+  $PROD_CMD restart [--attach]
+  $PROD_CMD status
+  $PROD_CMD logs [-f|--follow]
+  $PROD_CMD help
 
 Environment:
   API_HOST API_PORT UVICORN_WORKERS UVICORN_EXTRA_ARGS
@@ -762,8 +764,8 @@ start_cmd() {
   fi
 
   info "Server is running in background mode."
-  info "Use './start_prod_server.sh logs -f' to follow logs."
-  info "Use './start_prod_server.sh stop' to stop service."
+  info "Use '$PROD_CMD logs -f' to follow logs."
+  info "Use '$PROD_CMD stop' to stop service."
   STARTED_BACKEND=0
   trap - EXIT INT TERM
 }

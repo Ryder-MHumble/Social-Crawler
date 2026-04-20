@@ -87,6 +87,12 @@ class XiaoHongShuLogin(AbstractLogin):
     async def begin(self):
         """Start login xiaohongshu"""
         utils.logger.info("[XiaoHongShuLogin.begin] Begin login xiaohongshu ...")
+        try:
+            if await self.check_login_state(""):
+                utils.logger.info("[XiaoHongShuLogin.begin] Login already active, skip login flow.")
+                return
+        except Exception:
+            pass
         if config.LOGIN_TYPE == "qrcode":
             await self.login_by_qrcode()
         elif config.LOGIN_TYPE == "phone":

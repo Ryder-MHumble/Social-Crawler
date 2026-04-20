@@ -11,6 +11,7 @@ from tasks.common.template import PresetSeed, TaskDefinition, TaskField, TaskFie
 from tasks.runner.registry import load_task_definitions
 from tools import runtime_paths
 
+from .browsermint_integration import BrowsermintIntegrationClient, probe_browsermint_login
 from .task_center_store import TaskCenterFileStore
 from .task_run_manager import TaskRunManager
 
@@ -72,6 +73,7 @@ def _serialize_task_spec(task_spec) -> dict[str, Any]:
                 "key": stage.key,
                 "name": stage.name,
                 "concurrent": stage.concurrent,
+                "max_parallel": stage.max_parallel,
                 "abort_on_failure": stage.abort_on_failure,
                 "jobs": [
                     {
@@ -112,6 +114,7 @@ class TaskCenterService:
         runtime_paths.ensure_runtime_layout()
         self.store = TaskCenterFileStore(state_dir or runtime_paths.get_task_center_state_dir())
         self.run_manager = TaskRunManager(project_root=project_root, store=self.store)
+        self.browsermint_client = BrowsermintIntegrationClient()
         self._ensure_seed_presets()
 
     def list_templates(self) -> list[dict[str, Any]]:
@@ -149,6 +152,18 @@ class TaskCenterService:
             key=lambda preset: (not preset.get("is_default", False), preset.get("updated_at", "")),
         )
         return presets
+
+    def list_browsermint_sessions(self) -> dict[str, Any]:
+        if not self.browsermint_client.configured:
+            return {
+                "configured": False,
+                "sessions": [],
+            }
+        sessions = self.browsermint_client.list_sessions()
+        return {
+            "configured": True,
+            "sessions": [asdict(session) for session in sessions],
+        }
 
     def create_preset(
         self,
@@ -223,11 +238,14 @@ class TaskCenterService:
     ) -> dict[str, Any]:
         definition = self._get_definition(task_slug)
         normalized = self._merge_and_normalize(definition, params=params, preset_id=preset_id)
+        if self.get_active_run():
+            raise RuntimeError("Another task is already running.")
         task_spec = definition.build_task_spec(
             self.project_root,
             self.python_executable,
             normalized,
         )
+        self._prepare_browser_provider(task_spec, normalized)
         return self.run_manager.start_run(
             task_spec,
             normalized_params=normalized,
@@ -295,6 +313,26 @@ class TaskCenterService:
         if not definition:
             raise KeyError(f"Task not found: {slug}")
         return definition
+
+    def _prepare_browser_provider(self, task_spec, normalized_params: dict[str, Any]) -> None:
+        browser_provider = str(normalized_params.get("browser_provider") or "local").strip().lower()
+        if browser_provider != "browsermint":
+            return
+
+        connection = self.browsermint_client.connect_session(
+            str(normalized_params.get("browser_session_id") or "")
+        )
+        probe_browsermint_login(connection, normalized_params)
+
+        for stage in task_spec.stages:
+            for job in stage.jobs:
+                job.env.update(
+                    {
+                        "CDP_REMOTE_WS_URL": connection.cdp_ws_url,
+                        "SOCIAL_CRAWLER_BROWSER_PROVIDER": "browsermint",
+                        "SOCIAL_CRAWLER_BROWSER_SESSION_ID": connection.session_id,
+                    }
+                )
 
     def _get_preset_or_raise(self, preset_id: str) -> dict[str, Any]:
         for preset in self.store.load_presets():

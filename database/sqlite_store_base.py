@@ -8,6 +8,7 @@ from typing import Any
 
 import config
 
+from .relevance_filter import is_content_relevant
 from .sqlite_storage import get_sqlite_storage
 
 
@@ -76,14 +77,15 @@ class SQLiteUnifiedStoreBase:
     def _is_content_relevant(title: str, description: str) -> bool:
         if not getattr(config, "ENABLE_RELEVANCE_FILTER", False):
             return True
-        text = f"{title or ''} {description or ''}".lower()
-        for keyword in getattr(config, "RELEVANCE_EXCLUDE_KEYWORDS", []):
-            if str(keyword).lower() in text:
-                return False
-        must_contain = getattr(config, "RELEVANCE_MUST_CONTAIN", [])
-        if not must_contain:
-            return True
-        return any(str(keyword).lower() in text for keyword in must_contain)
+        return is_content_relevant(
+            title=title,
+            description=description,
+            must_contain=getattr(config, "RELEVANCE_MUST_CONTAIN", []),
+            exclude_keywords=getattr(config, "RELEVANCE_EXCLUDE_KEYWORDS", []),
+            match_mode=getattr(config, "RELEVANCE_MATCH_MODE", "loose"),
+            min_match_chars=getattr(config, "RELEVANCE_MIN_MATCH_CHARS", 3),
+            min_match_ratio=getattr(config, "RELEVANCE_MIN_MATCH_RATIO", 0.3),
+        )
 
     def save_content(self, content_item: dict[str, Any]) -> None:
         content_id = str(content_item.get("content_id", "") or "")

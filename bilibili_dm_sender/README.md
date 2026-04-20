@@ -1,4 +1,4 @@
-﻿> NOTE: Legacy monitor scripts were removed. Use unified launcher run_crawl.sh creator_outreach to run and monitor tasks.
+> NOTE: Legacy monitor scripts were removed. Use `./social_crawler.sh task creator_outreach` to run and monitor tasks.
 
 # B绔欑淇℃壒閲忓彂閫佸伐鍏?
 
@@ -13,7 +13,7 @@ bilibili_dm_sender/
 鈹溾攢鈹€ dm_record_store.py             # 鏁版嵁搴撳瓨鍌ㄦā鍧?
 鈹溾攢鈹€ schema.sql                     # 鏁版嵁搴撹〃缁撴瀯
 鈹溾攢鈹€ check_dm_status.py             # 妫€鏌ュ彂閫佺姸鎬?
-鈹溾攢鈹€ run_crawl.sh creator_outreach            # 瀹炴椂鐩戞帶鑴氭湰
+鈹溾攢鈹€ ./social_crawler.sh task creator_outreach # 瀹炴椂鐩戞帶鑴氭湰
 鈹溾攢鈹€ start.sh             # 鍚姩鑴氭湰
 鈹斺攢鈹€ README.md                      # 鏈枃妗?
 ```
@@ -152,7 +152,7 @@ python3 ../scripts/verification/bilibili_dm/check_dm_status.py
 ### 瀹炴椂鐩戞帶
 
 ```bash
-python3 run_crawl.sh creator_outreach
+./social_crawler.sh task creator_outreach
 ```
 
 瀹炴椂鏄剧ず鍙戦€佽繘搴﹀拰缁熻淇℃伅銆?
@@ -225,5 +225,4 @@ python3 dm_record_store.py
 ## 馃搫 璁稿彲璇存槑
 
 鏈伐鍏蜂粎渚涘涔犲拰鐮旂┒浣跨敤锛屼娇鐢ㄨ€呴渶閬靛畧B绔欑敤鎴峰崗璁拰鐩稿叧娉曞緥娉曡銆?
-
 

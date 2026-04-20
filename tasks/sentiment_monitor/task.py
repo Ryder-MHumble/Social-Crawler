@@ -7,6 +7,12 @@ from pathlib import Path
 from typing import Any
 
 import config
+from tasks.common.crawl_planner import (
+    normalize_chunk_size,
+    normalize_parallel_limit,
+    normalize_split_mode,
+    plan_platform_value_jobs,
+)
 
 try:
     import yaml
@@ -30,10 +36,20 @@ PLATFORM_OPTIONS = [
     TaskFieldOption(value=platform, label=label)
     for platform, label in PLATFORM_LABELS.items()
 ]
+JOB_MODE_OPTIONS = [
+    TaskFieldOption(value="auto", label="自动", description="默认优先按平台聚合，必要时再拆成多批 job。"),
+    TaskFieldOption(value="bundle", label="按平台聚合", description="每个平台 1 个 job，内部顺序跑所有关键词或账号。"),
+    TaskFieldOption(value="single", label="逐项拆分", description="平台 x 单关键词/账号 一项一个 job。"),
+    TaskFieldOption(value="chunked", label="按批拆分", description="平台 x N 个关键词/账号 一批一个 job。"),
+]
 LOGIN_OPTIONS = [
     TaskFieldOption(value="qrcode", label="二维码登录"),
     TaskFieldOption(value="cookie", label="Cookie 登录"),
     TaskFieldOption(value="phone", label="手机号登录"),
+]
+BROWSER_PROVIDER_OPTIONS = [
+    TaskFieldOption(value="local", label="本地浏览器"),
+    TaskFieldOption(value="browsermint", label="Browsermint"),
 ]
 SAVE_OPTIONS = [
     TaskFieldOption(value="json", label="JSON (Local Default)"),
@@ -47,8 +63,15 @@ SAVE_OPTIONS = [
 ]
 ALLOWED_LOGIN_TYPES = {option.value for option in LOGIN_OPTIONS}
 ALLOWED_SAVE_OPTIONS = {option.value for option in SAVE_OPTIONS}
+ALLOWED_BROWSER_PROVIDERS = {option.value for option in BROWSER_PROVIDER_OPTIONS}
 _TASK_CONFIG_PATH = Path(__file__).with_name("config.yaml")
 _TASK_CONFIG_WARNING_PREFIX = "[sentiment_monitor.task]"
+DEFAULT_KEYWORD_JOB_MODE = "auto"
+DEFAULT_KEYWORD_JOB_CHUNK_SIZE = 1
+DEFAULT_KEYWORD_MAX_PARALLEL = 0
+DEFAULT_CREATOR_JOB_MODE = "auto"
+DEFAULT_CREATOR_JOB_CHUNK_SIZE = 1
+DEFAULT_CREATOR_MAX_PARALLEL = 0
 
 FALLBACK_KEYWORD_GROUPS = {
     "zgca_core": [
@@ -124,6 +147,9 @@ FALLBACK_TASK_CONFIG = {
         "enable_keyword_search": True,
         "keyword_whitelist": [],
         "keyword_blacklist": [],
+        "enable_relevance_filter": getattr(config, "ENABLE_RELEVANCE_FILTER", True),
+        "relevance_must_contain": getattr(config, "RELEVANCE_MUST_CONTAIN", []),
+        "relevance_exclude_keywords": getattr(config, "RELEVANCE_EXCLUDE_KEYWORDS", []),
         "max_notes_count": 30,
         "top_posts_count": 30,
         "enable_comments": False,
@@ -219,6 +245,11 @@ def _normalize_save_option(value: Any, fallback: str) -> str:
     return candidate if candidate in ALLOWED_SAVE_OPTIONS else fallback
 
 
+def _normalize_browser_provider(value: Any, fallback: str = "local") -> str:
+    candidate = str(value).strip().lower() if value is not None else fallback
+    return candidate if candidate in ALLOWED_BROWSER_PROVIDERS else fallback
+
+
 def _normalize_cookie_text(value: Any, fallback: str = "") -> str:
     if value is None:
         return fallback
@@ -234,6 +265,13 @@ def _normalize_keyword_text(value: Any, fallback: str) -> str:
 
 def _csv_text(value: Any) -> str:
     return ",".join(_sanitize_string_list(value))
+
+
+def _summarize_job_values(values: Sequence[str], limit: int = 24) -> str:
+    preview = ",".join(str(value).strip() for value in values if str(value).strip())
+    if len(preview) <= limit:
+        return preview
+    return f"{preview[: limit - 3]}..."
 
 
 def _resolve_keywords_with_rules(
@@ -347,6 +385,22 @@ def _normalize_external_task_config(raw: Mapping[str, Any]) -> dict[str, Any]:
         )
         if isinstance(default_inputs_raw, Mapping)
         else [],
+        "enable_relevance_filter": _coerce_bool(
+            default_inputs_raw.get("enable_relevance_filter"),
+            bool(fallback_defaults["enable_relevance_filter"]),
+        )
+        if isinstance(default_inputs_raw, Mapping)
+        else bool(fallback_defaults["enable_relevance_filter"]),
+        "relevance_must_contain": _sanitize_string_list(
+            default_inputs_raw.get("relevance_must_contain"),
+        )
+        if isinstance(default_inputs_raw, Mapping)
+        else list(fallback_defaults["relevance_must_contain"]),
+        "relevance_exclude_keywords": _sanitize_string_list(
+            default_inputs_raw.get("relevance_exclude_keywords"),
+        )
+        if isinstance(default_inputs_raw, Mapping)
+        else list(fallback_defaults["relevance_exclude_keywords"]),
         "max_notes_count": _coerce_int(
             default_inputs_raw.get(
                 "max_notes_count",
@@ -457,6 +511,12 @@ def _normalize_external_task_config(raw: Mapping[str, Any]) -> dict[str, Any]:
                     ),
                     "keyword_whitelist": _sanitize_string_list(raw_preset.get("keyword_whitelist")),
                     "keyword_blacklist": _sanitize_string_list(raw_preset.get("keyword_blacklist")),
+                    "enable_relevance_filter": _coerce_bool(
+                        raw_preset.get("enable_relevance_filter"),
+                        bool(fallback_defaults["enable_relevance_filter"]),
+                    ),
+                    "relevance_must_contain": raw_preset.get("relevance_must_contain"),
+                    "relevance_exclude_keywords": raw_preset.get("relevance_exclude_keywords"),
                     "max_notes_count": _coerce_int(
                         raw_preset.get("max_notes_count", raw_preset.get("top_posts_count")),
                         30,
@@ -587,6 +647,16 @@ def _load_task_config() -> dict[str, Any]:
         or list(keyword_defaults["whitelist"]),
         "keyword_blacklist": _sanitize_string_list(loaded_defaults.get("keyword_blacklist"))
         or list(keyword_defaults["blacklist"]),
+        "enable_relevance_filter": _coerce_bool(
+            loaded_defaults.get("enable_relevance_filter"),
+            bool(fallback_defaults["enable_relevance_filter"]),
+        ),
+        "relevance_must_contain": _sanitize_string_list(loaded_defaults.get("relevance_must_contain"))
+        or list(fallback_defaults["relevance_must_contain"]),
+        "relevance_exclude_keywords": _sanitize_string_list(
+            loaded_defaults.get("relevance_exclude_keywords")
+        )
+        or list(fallback_defaults["relevance_exclude_keywords"]),
         "max_notes_count": max(
             1,
             _coerce_int(
@@ -687,6 +757,12 @@ UI_DEFAULT_PARAMS = {
     "enable_keyword_search": bool(DEFAULT_INPUTS["enable_keyword_search"]),
     "keyword_whitelist": _csv_text(DEFAULT_INPUTS["keyword_whitelist"]),
     "keyword_blacklist": _csv_text(DEFAULT_INPUTS["keyword_blacklist"]),
+    "keyword_job_mode": DEFAULT_KEYWORD_JOB_MODE,
+    "keyword_job_chunk_size": DEFAULT_KEYWORD_JOB_CHUNK_SIZE,
+    "keyword_job_max_parallel": DEFAULT_KEYWORD_MAX_PARALLEL,
+    "enable_relevance_filter": bool(DEFAULT_INPUTS["enable_relevance_filter"]),
+    "relevance_must_contain": _csv_text(DEFAULT_INPUTS["relevance_must_contain"]),
+    "relevance_exclude_keywords": _csv_text(DEFAULT_INPUTS["relevance_exclude_keywords"]),
     "max_notes_count": int(DEFAULT_INPUTS["max_notes_count"]),
     "top_posts_count": int(DEFAULT_INPUTS["max_notes_count"]),
     "enable_comments": bool(DEFAULT_INPUTS["enable_comments"]),
@@ -697,8 +773,13 @@ UI_DEFAULT_PARAMS = {
     "specified_account_ids": _csv_text(DEFAULT_INPUTS["specified_account_ids"]),
     "account_whitelist": _csv_text(DEFAULT_INPUTS["account_whitelist"]),
     "account_blacklist": _csv_text(DEFAULT_INPUTS["account_blacklist"]),
+    "creator_job_mode": DEFAULT_CREATOR_JOB_MODE,
+    "creator_job_chunk_size": DEFAULT_CREATOR_JOB_CHUNK_SIZE,
+    "creator_job_max_parallel": DEFAULT_CREATOR_MAX_PARALLEL,
     "login_type": str(DEFAULT_INPUTS["login_type"]),
     "cookies": _normalize_cookie_text(DEFAULT_INPUTS.get("cookies", "")),
+    "browser_provider": "local",
+    "browser_session_id": "",
     "save_option": str(DEFAULT_INPUTS["save_option"]),
     "headless": bool(DEFAULT_INPUTS["headless"]),
 }
@@ -707,10 +788,13 @@ UI_DEFAULT_PARAMS = {
 def _build_seed_params(
     *,
     platforms: list[str],
-    keyword_groups: list[str] | None = None,
-    keywords: Any = None,
     max_notes_count: int,
     enable_comments: bool,
+    keyword_groups: list[str] | None = None,
+    keywords: Any = None,
+    enable_relevance_filter: bool | None = None,
+    relevance_must_contain: Any = None,
+    relevance_exclude_keywords: Any = None,
     enable_sub_comments: bool = False,
     max_comments_count_singlenotes: int | None = None,
     save_option: str | None = None,
@@ -725,6 +809,24 @@ def _build_seed_params(
         "enable_keyword_search": True,
         "keyword_whitelist": "",
         "keyword_blacklist": "",
+        "keyword_job_mode": UI_DEFAULT_PARAMS["keyword_job_mode"],
+        "keyword_job_chunk_size": UI_DEFAULT_PARAMS["keyword_job_chunk_size"],
+        "keyword_job_max_parallel": UI_DEFAULT_PARAMS["keyword_job_max_parallel"],
+        "enable_relevance_filter": (
+            UI_DEFAULT_PARAMS["enable_relevance_filter"]
+            if enable_relevance_filter is None
+            else bool(enable_relevance_filter)
+        ),
+        "relevance_must_contain": (
+            UI_DEFAULT_PARAMS["relevance_must_contain"]
+            if relevance_must_contain is None
+            else _csv_text(relevance_must_contain)
+        ),
+        "relevance_exclude_keywords": (
+            UI_DEFAULT_PARAMS["relevance_exclude_keywords"]
+            if relevance_exclude_keywords is None
+            else _csv_text(relevance_exclude_keywords)
+        ),
         "max_notes_count": max(1, int(max_notes_count)),
         "top_posts_count": max(1, int(max_notes_count)),
         "enable_comments": bool(enable_comments),
@@ -749,8 +851,13 @@ def _build_seed_params(
         "specified_account_ids": "",
         "account_whitelist": "",
         "account_blacklist": "",
+        "creator_job_mode": UI_DEFAULT_PARAMS["creator_job_mode"],
+        "creator_job_chunk_size": UI_DEFAULT_PARAMS["creator_job_chunk_size"],
+        "creator_job_max_parallel": UI_DEFAULT_PARAMS["creator_job_max_parallel"],
         "login_type": UI_DEFAULT_PARAMS["login_type"],
         "cookies": "",
+        "browser_provider": UI_DEFAULT_PARAMS["browser_provider"],
+        "browser_session_id": UI_DEFAULT_PARAMS["browser_session_id"],
         "save_option": _normalize_save_option(
             save_option,
             UI_DEFAULT_PARAMS["save_option"],
@@ -872,6 +979,9 @@ def _build_media_daily_preset_seeds() -> list[PresetSeed]:
                     max_comments_count_singlenotes=int(
                         preset["max_comments_count_singlenotes"]
                     ),
+                    enable_relevance_filter=preset.get("enable_relevance_filter"),
+                    relevance_must_contain=preset.get("relevance_must_contain"),
+                    relevance_exclude_keywords=preset.get("relevance_exclude_keywords"),
                     save_option=str(preset["save_option"]),
                 ),
                 is_default=bool(preset["is_default"]),
@@ -941,12 +1051,68 @@ def get_template() -> TaskTemplate:
                 visible_when={"enable_keyword_search": True},
             ),
             TaskField(
+                key="keyword_job_mode",
+                component="select",
+                label="关键词任务拆分",
+                default=UI_DEFAULT_PARAMS["keyword_job_mode"],
+                description="决定关键词是按平台聚合、逐项拆分还是按批拆分成多个 job。",
+                group="执行编排",
+                options=JOB_MODE_OPTIONS,
+                visible_when={"enable_keyword_search": True},
+            ),
+            TaskField(
+                key="keyword_job_chunk_size",
+                component="number",
+                label="关键词每批数量",
+                default=UI_DEFAULT_PARAMS["keyword_job_chunk_size"],
+                description="仅在按批拆分时生效。",
+                group="执行编排",
+                validation={"min": 1, "max": 100},
+                visible_when={"enable_keyword_search": True, "keyword_job_mode": "chunked"},
+            ),
+            TaskField(
+                key="keyword_job_max_parallel",
+                component="number",
+                label="关键词并发上限",
+                default=UI_DEFAULT_PARAMS["keyword_job_max_parallel"],
+                description="填 0 表示自动：默认单平台最多 2 个并发，多平台默认每个平台 1 个 job。",
+                group="执行编排",
+                validation={"min": 0, "max": 64},
+                visible_when={"enable_keyword_search": True},
+            ),
+            TaskField(
                 key="max_notes_count",
                 component="number",
                 label="每个平台 Top 帖子数",
                 default=UI_DEFAULT_PARAMS["max_notes_count"],
                 group="内容控制",
                 validation={"min": 1, "max": 200},
+            ),
+            TaskField(
+                key="enable_relevance_filter",
+                component="switch",
+                label="启用相关性过滤",
+                default=UI_DEFAULT_PARAMS["enable_relevance_filter"],
+                group="内容控制",
+                helper_text="开启后，爬虫会基于包含词/排除词筛掉不相关内容。",
+            ),
+            TaskField(
+                key="relevance_must_contain",
+                component="textarea",
+                label="相关性包含词",
+                default=UI_DEFAULT_PARAMS["relevance_must_contain"],
+                group="内容控制",
+                description="多个词用英文逗号分隔，命中任一词即视为相关。",
+                visible_when={"enable_relevance_filter": True},
+            ),
+            TaskField(
+                key="relevance_exclude_keywords",
+                component="textarea",
+                label="相关性排除词",
+                default=UI_DEFAULT_PARAMS["relevance_exclude_keywords"],
+                group="内容控制",
+                description="多个词用英文逗号分隔，命中任一词即剔除。",
+                visible_when={"enable_relevance_filter": True},
             ),
             TaskField(
                 key="enable_comments",
@@ -1005,12 +1171,61 @@ def get_template() -> TaskTemplate:
                 visible_when={"enable_account_crawl": True},
             ),
             TaskField(
+                key="creator_job_mode",
+                component="select",
+                label="账号任务拆分",
+                default=UI_DEFAULT_PARAMS["creator_job_mode"],
+                description="决定账号抓取是按平台聚合、逐账号拆分还是按批拆分。",
+                group="执行编排",
+                options=JOB_MODE_OPTIONS,
+                visible_when={"enable_account_crawl": True},
+            ),
+            TaskField(
+                key="creator_job_chunk_size",
+                component="number",
+                label="账号每批数量",
+                default=UI_DEFAULT_PARAMS["creator_job_chunk_size"],
+                description="仅在按批拆分时生效。",
+                group="执行编排",
+                validation={"min": 1, "max": 100},
+                visible_when={"enable_account_crawl": True, "creator_job_mode": "chunked"},
+            ),
+            TaskField(
+                key="creator_job_max_parallel",
+                component="number",
+                label="账号并发上限",
+                default=UI_DEFAULT_PARAMS["creator_job_max_parallel"],
+                description="填 0 表示自动，系统会优先保持每个平台 1 个活跃 job。",
+                group="执行编排",
+                validation={"min": 0, "max": 64},
+                visible_when={"enable_account_crawl": True},
+            ),
+            TaskField(
+                key="browser_provider",
+                component="select",
+                label="浏览器提供方",
+                default=UI_DEFAULT_PARAMS["browser_provider"],
+                group="运行配置",
+                options=BROWSER_PROVIDER_OPTIONS,
+            ),
+            TaskField(
+                key="browser_session_id",
+                component="select",
+                label="Browsermint 会话",
+                default=UI_DEFAULT_PARAMS["browser_session_id"],
+                group="运行配置",
+                options=[],
+                helper_text="选择一个已登录的 Browsermint 会话。启动任务时会即时换取新的 CDP 连接信息。",
+                visible_when={"browser_provider": "browsermint"},
+            ),
+            TaskField(
                 key="login_type",
                 component="select",
                 label="登录方式",
                 default=UI_DEFAULT_PARAMS["login_type"],
                 group="运行配置",
                 options=LOGIN_OPTIONS,
+                visible_when={"browser_provider": "local"},
             ),
             TaskField(
                 key="save_option",
@@ -1030,7 +1245,7 @@ def get_template() -> TaskTemplate:
                 layout="full",
                 placeholder="粘贴完整 Cookie 字符串，例如 a=1; b=2",
                 helper_text="仅在 Cookie 登录时生效。若留空，则回退读取 cookies_config.py 中的平台 Cookie。",
-                visible_when={"login_type": "cookie"},
+                visible_when={"login_type": "cookie", "browser_provider": "local"},
             ),
             TaskField(
                 key="headless",
@@ -1039,6 +1254,7 @@ def get_template() -> TaskTemplate:
                 default=UI_DEFAULT_PARAMS["headless"],
                 group="运行配置",
                 helper_text="二维码登录会自动关闭无头模式，确保浏览器窗口可见并可扫码。",
+                visible_when={"browser_provider": "local"},
                 disabled_when={"login_type": "qrcode"},
             ),
         ],
@@ -1063,6 +1279,14 @@ def normalize_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]:
     keyword_blacklist = _normalize_keyword_text(
         raw.get("keyword_blacklist"),
         UI_DEFAULT_PARAMS["keyword_blacklist"],
+    )
+    relevance_must_contain = _normalize_keyword_text(
+        raw.get("relevance_must_contain"),
+        UI_DEFAULT_PARAMS["relevance_must_contain"],
+    )
+    relevance_exclude_keywords = _normalize_keyword_text(
+        raw.get("relevance_exclude_keywords"),
+        UI_DEFAULT_PARAMS["relevance_exclude_keywords"],
     )
     resolved_keywords = _resolve_keywords_with_rules(
         keywords,
@@ -1094,12 +1318,35 @@ def normalize_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]:
         raw.get("enable_account_crawl"),
         UI_DEFAULT_PARAMS["enable_account_crawl"] or bool(resolved_account_ids),
     )
+    keyword_job_mode = normalize_split_mode(
+        raw.get("keyword_job_mode"),
+        UI_DEFAULT_PARAMS["keyword_job_mode"],
+    )
+    creator_job_mode = normalize_split_mode(
+        raw.get("creator_job_mode"),
+        UI_DEFAULT_PARAMS["creator_job_mode"],
+    )
     params = {
         "platforms": _normalize_platforms(raw.get("platforms"), list(UI_DEFAULT_PARAMS["platforms"])),
         "keywords": _csv_text(resolved_keywords),
         "enable_keyword_search": enable_keyword_search,
         "keyword_whitelist": _csv_text(keyword_whitelist),
         "keyword_blacklist": _csv_text(keyword_blacklist),
+        "keyword_job_mode": keyword_job_mode,
+        "keyword_job_chunk_size": normalize_chunk_size(
+            raw.get("keyword_job_chunk_size"),
+            UI_DEFAULT_PARAMS["keyword_job_chunk_size"],
+        ),
+        "keyword_job_max_parallel": normalize_parallel_limit(
+            raw.get("keyword_job_max_parallel"),
+            UI_DEFAULT_PARAMS["keyword_job_max_parallel"],
+        ),
+        "enable_relevance_filter": _coerce_bool(
+            raw.get("enable_relevance_filter"),
+            UI_DEFAULT_PARAMS["enable_relevance_filter"],
+        ),
+        "relevance_must_contain": _csv_text(relevance_must_contain),
+        "relevance_exclude_keywords": _csv_text(relevance_exclude_keywords),
         "max_notes_count": max_notes_count,
         "top_posts_count": max_notes_count,
         "enable_comments": _coerce_bool(raw.get("enable_comments"), UI_DEFAULT_PARAMS["enable_comments"]),
@@ -1114,11 +1361,27 @@ def normalize_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]:
         "creator_ids": _csv_text(resolved_account_ids),
         "account_whitelist": _csv_text(account_whitelist),
         "account_blacklist": _csv_text(account_blacklist),
+        "creator_job_mode": creator_job_mode,
+        "creator_job_chunk_size": normalize_chunk_size(
+            raw.get("creator_job_chunk_size"),
+            UI_DEFAULT_PARAMS["creator_job_chunk_size"],
+        ),
+        "creator_job_max_parallel": normalize_parallel_limit(
+            raw.get("creator_job_max_parallel"),
+            UI_DEFAULT_PARAMS["creator_job_max_parallel"],
+        ),
+        "browser_provider": _normalize_browser_provider(raw.get("browser_provider"), UI_DEFAULT_PARAMS["browser_provider"]),
+        "browser_session_id": str(raw.get("browser_session_id") or "").strip(),
         "login_type": _normalize_login_type(raw.get("login_type"), UI_DEFAULT_PARAMS["login_type"]),
         "cookies": _normalize_cookie_text(raw.get("cookies"), UI_DEFAULT_PARAMS["cookies"]),
         "save_option": _normalize_save_option(raw.get("save_option"), UI_DEFAULT_PARAMS["save_option"]),
         "headless": _coerce_bool(raw.get("headless"), UI_DEFAULT_PARAMS["headless"]),
     }
+    if params["browser_provider"] == "browsermint":
+        params["login_type"] = "qrcode"
+        params["cookies"] = ""
+        params["headless"] = False
+        params["save_option"] = "sqlite"
     if params["login_type"] == "qrcode":
         # QR login requires a visible browser window for manual scan/verification.
         params["headless"] = False
@@ -1156,6 +1419,30 @@ def _resolve_runtime_params(params: Mapping[str, Any] | None) -> dict[str, Any]:
                 "SENTIMENT_KEYWORD_BLACKLIST",
                 UI_DEFAULT_PARAMS["keyword_blacklist"],
             ),
+            "keyword_job_mode": os.getenv(
+                "SENTIMENT_KEYWORD_JOB_MODE",
+                UI_DEFAULT_PARAMS["keyword_job_mode"],
+            ),
+            "keyword_job_chunk_size": os.getenv(
+                "SENTIMENT_KEYWORD_JOB_CHUNK_SIZE",
+                str(UI_DEFAULT_PARAMS["keyword_job_chunk_size"]),
+            ),
+            "keyword_job_max_parallel": os.getenv(
+                "SENTIMENT_KEYWORD_JOB_MAX_PARALLEL",
+                str(UI_DEFAULT_PARAMS["keyword_job_max_parallel"]),
+            ),
+            "enable_relevance_filter": os.getenv(
+                "SENTIMENT_ENABLE_RELEVANCE_FILTER",
+                "true" if UI_DEFAULT_PARAMS["enable_relevance_filter"] else "false",
+            ),
+            "relevance_must_contain": os.getenv(
+                "SENTIMENT_RELEVANCE_MUST_CONTAIN",
+                UI_DEFAULT_PARAMS["relevance_must_contain"],
+            ),
+            "relevance_exclude_keywords": os.getenv(
+                "SENTIMENT_RELEVANCE_EXCLUDE_KEYWORDS",
+                UI_DEFAULT_PARAMS["relevance_exclude_keywords"],
+            ),
             "max_notes_count": os.getenv(
                 "SENTIMENT_MAX_NOTES_COUNT",
                 str(UI_DEFAULT_PARAMS["max_notes_count"]),
@@ -1188,6 +1475,20 @@ def _resolve_runtime_params(params: Mapping[str, Any] | None) -> dict[str, Any]:
                 "SENTIMENT_ACCOUNT_BLACKLIST",
                 UI_DEFAULT_PARAMS["account_blacklist"],
             ),
+            "creator_job_mode": os.getenv(
+                "SENTIMENT_CREATOR_JOB_MODE",
+                UI_DEFAULT_PARAMS["creator_job_mode"],
+            ),
+            "creator_job_chunk_size": os.getenv(
+                "SENTIMENT_CREATOR_JOB_CHUNK_SIZE",
+                str(UI_DEFAULT_PARAMS["creator_job_chunk_size"]),
+            ),
+            "creator_job_max_parallel": os.getenv(
+                "SENTIMENT_CREATOR_JOB_MAX_PARALLEL",
+                str(UI_DEFAULT_PARAMS["creator_job_max_parallel"]),
+            ),
+            "browser_provider": os.getenv("BROWSER_PROVIDER", UI_DEFAULT_PARAMS["browser_provider"]),
+            "browser_session_id": os.getenv("BROWSERMINT_SESSION_ID", UI_DEFAULT_PARAMS["browser_session_id"]),
             "login_type": os.getenv("SENTIMENT_LOGIN_TYPE", UI_DEFAULT_PARAMS["login_type"]),
             "cookies": os.getenv("SENTIMENT_COOKIES", UI_DEFAULT_PARAMS["cookies"]),
             "save_option": os.getenv("SENTIMENT_SAVE_OPTION", UI_DEFAULT_PARAMS["save_option"]),
@@ -1247,10 +1548,37 @@ def build_task(
         stage_value = normalized[stage_value_key]
         if not enabled or not stage_value:
             continue
+        job_slices, stage_max_parallel = plan_platform_value_jobs(
+            normalized["platforms"],
+            _sanitize_string_list(stage_value),
+            split_mode=(
+                normalized["keyword_job_mode"]
+                if crawl_type == "search"
+                else normalized["creator_job_mode"]
+            ),
+            chunk_size=(
+                normalized["keyword_job_chunk_size"]
+                if crawl_type == "search"
+                else normalized["creator_job_chunk_size"]
+            ),
+            max_parallel=(
+                normalized["keyword_job_max_parallel"]
+                if crawl_type == "search"
+                else normalized["creator_job_max_parallel"]
+            ),
+        )
         jobs: list[TaskJob] = []
-        for platform in normalized["platforms"]:
+        for job_slice in job_slices:
+            platform = job_slice.platform
             cookie = platform_cookie_map.get(platform, "")
             runtime_login_type = login_type
+            slice_value = job_slice.csv_value
+            job_label = _summarize_job_values(job_slice.values)
+            suffix = (
+                f" [{job_slice.group_index}/{job_slice.group_total}] {job_label}"
+                if job_slice.group_total > 1
+                else (f" {job_label}" if len(job_slice.values) == 1 else "")
+            )
             command = [
                 python_executable,
                 "main.py",
@@ -1261,7 +1589,7 @@ def build_task(
                 "--type",
                 crawl_type,
                 flag,
-                stage_value,
+                slice_value,
                 "--save_data_option",
                 normalized["save_option"],
                 "--max_notes_count",
@@ -1277,12 +1605,22 @@ def build_task(
             ]
             if cookie:
                 command.extend(["--cookies", cookie])
+            job_env = {
+                "ENABLE_RELEVANCE_FILTER": "true" if normalized["enable_relevance_filter"] else "false",
+                "RELEVANCE_MUST_CONTAIN": normalized["relevance_must_contain"],
+                "RELEVANCE_EXCLUDE_KEYWORDS": normalized["relevance_exclude_keywords"],
+            }
             jobs.append(
                 TaskJob(
-                    key=f"{crawl_type}_{platform}",
-                    name=f"{PLATFORM_LABELS.get(platform, platform)} {crawl_type} crawl",
+                    key=(
+                        f"{crawl_type}_{platform}_{job_slice.group_index:02d}"
+                        if job_slice.group_total > 1
+                        else f"{crawl_type}_{platform}"
+                    ),
+                    name=f"{PLATFORM_LABELS.get(platform, platform)} {crawl_type} crawl{suffix}",
                     command=command,
                     cwd=project_root,
+                    env=job_env,
                 )
             )
         stages.append(
@@ -1291,6 +1629,7 @@ def build_task(
                 name=stage_name,
                 jobs=jobs,
                 concurrent=True,
+                max_parallel=stage_max_parallel or None,
                 abort_on_failure=False,
             )
         )
@@ -1307,10 +1646,14 @@ def build_task(
             "Mission: run configurable sentiment monitoring.",
             f"Keyword search: {'enabled' if normalized['enable_keyword_search'] else 'disabled'}",
             f"Keywords: {normalized['keywords'] or 'n/a'}",
+            f"Relevance filter: {'enabled' if normalized['enable_relevance_filter'] else 'disabled'}",
+            f"Relevance must contain: {normalized['relevance_must_contain'] or 'n/a'}",
+            f"Relevance exclude: {normalized['relevance_exclude_keywords'] or 'n/a'}",
             f"Creator crawl: {'enabled' if normalized['enable_account_crawl'] else 'disabled'}",
             f"Creator IDs: {normalized['specified_account_ids'] or 'n/a'}",
             f"Platforms: {', '.join(PLATFORM_LABELS.get(p, p) for p in normalized['platforms'])}",
             f"Comments: {'enabled' if normalized['enable_comments'] else 'disabled'}",
+            f"Browser: {normalized['browser_provider']} / {normalized['browser_session_id'] or 'local-session'}",
             f"Save option: {normalized['save_option']}",
             f"Login: {normalized['login_type']} / headless={normalized['headless']} / cookie={'set' if cookie_input else 'unset'}",
         ],

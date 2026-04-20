@@ -85,7 +85,7 @@ def main() -> int:
     else:
         if not sys.stdin.isatty():
             print("No task provided in non-interactive mode.")
-            print("Use '--list' or pass one task name, for example: run_crawl.sh sentiment_monitor")
+            print("Use '--list' or pass one task name, for example: ./social_crawler.sh task sentiment_monitor")
             return 1
         selected_task = choose_task_interactively(task_specs)
         if not selected_task:

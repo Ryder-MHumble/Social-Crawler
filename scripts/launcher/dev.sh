@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SOCIAL_CRAWLER_CMD_HINT="${SOCIAL_CRAWLER_CMD_HINT:-./social_crawler.sh}"
+DEV_CMD="$SOCIAL_CRAWLER_CMD_HINT dev"
 API_HOST="${API_HOST:-127.0.0.1}"
 API_PORT="${API_PORT:-18080}"
 WEB_HOST="${WEB_HOST:-127.0.0.1}"
@@ -52,11 +54,11 @@ mkdir -p "$LOG_DIR"
 usage() {
   cat <<EOF
 Usage:
-  ./start_dev_local.sh start [--attach]
-  ./start_dev_local.sh stop
-  ./start_dev_local.sh restart [--attach]
-  ./start_dev_local.sh status
-  ./start_dev_local.sh logs [-f|--follow]
+  $DEV_CMD start [--attach]
+  $DEV_CMD stop
+  $DEV_CMD restart [--attach]
+  $DEV_CMD status
+  $DEV_CMD logs [-f|--follow]
 
 Environment:
   API_HOST/API_PORT WEB_HOST/WEB_PORT
@@ -134,7 +136,7 @@ start_cmd() {
   frontend_pid="$(pid_from_file "$FRONTEND_PID_FILE")"
 
   if is_pid_running "$backend_pid" || is_pid_running "$frontend_pid"; then
-    echo "[dev] existing dev services detected, run './start_dev_local.sh restart' or './start_dev_local.sh stop' first."
+    echo "[dev] existing dev services detected, run '$DEV_CMD restart' or '$DEV_CMD stop' first."
     exit 1
   fi
 

@@ -64,6 +64,7 @@ class TaskStageResponse(BaseModel):
     key: str
     name: str
     concurrent: bool
+    max_parallel: int | None = None
     abort_on_failure: bool
     status: str | None = None
     jobs: list[TaskJobResponse] = Field(default_factory=list)

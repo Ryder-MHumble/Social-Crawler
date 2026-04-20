@@ -2,26 +2,38 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LAUNCHER_DIR="$ROOT_DIR/scripts/launcher"
 cd "$ROOT_DIR"
 
 usage() {
   cat <<'EOF'
-Social-Crawler Unified Launcher (Linux/macOS)
+Social-Crawler 统一入口 (Linux/macOS)
 
-Usage:
-  ./social_crawler.sh dev <start|stop|restart|status|logs> [--attach|-f]
-  ./social_crawler.sh prod <start|stop|restart|status|logs> [--attach|-f]
-  ./social_crawler.sh task [run_tasks.py args...]
+直接运行:
+  ./social_crawler.sh
   ./social_crawler.sh menu
   ./social_crawler.sh help
 
-Examples:
+开发环境:
   ./social_crawler.sh dev start
+  ./social_crawler.sh dev stop
+  ./social_crawler.sh dev status
   ./social_crawler.sh dev logs -f
-  ./social_crawler.sh prod restart
+
+生产环境:
+  ./social_crawler.sh prod start
+  ./social_crawler.sh prod stop
+  ./social_crawler.sh prod status
   ./social_crawler.sh prod logs -f
+
+任务执行:
   ./social_crawler.sh task --list
   ./social_crawler.sh task sentiment_monitor
+
+说明:
+  - 不带参数时会打印帮助；在交互终端中会进入菜单
+  - dev/prod 真实实现已收拢到 scripts/launcher/
+  - 根目录对外只保留这一个 shell 入口
 EOF
 }
 
@@ -59,27 +71,29 @@ run_task() {
 }
 
 run_dev() {
-  ./start_dev_local.sh "$@"
+  SOCIAL_CRAWLER_CMD_HINT="${SOCIAL_CRAWLER_CMD_HINT:-./social_crawler.sh}" \
+    "$LAUNCHER_DIR/dev.sh" "$@"
 }
 
 run_prod() {
-  ./start_prod_server.sh "$@"
+  SOCIAL_CRAWLER_CMD_HINT="${SOCIAL_CRAWLER_CMD_HINT:-./social_crawler.sh}" \
+    "$LAUNCHER_DIR/prod.sh" "$@"
 }
 
 menu() {
   while true; do
     cat <<'EOF'
 
-Choose an action:
-  1) dev start
-  2) dev stop
-  3) dev logs -f
-  4) prod start
-  5) prod stop
-  6) prod logs -f
-  7) task --list
-  8) task (custom args)
-  9) help
+请选择操作:
+  1) 开发环境启动
+  2) 开发环境关闭
+  3) 开发环境日志
+  4) 生产环境启动
+  5) 生产环境关闭
+  6) 生产环境日志
+  7) 查看任务列表
+  8) 自定义任务参数
+  9) 查看帮助
   0) exit
 EOF
     read -r -p "> " choice
@@ -98,7 +112,7 @@ EOF
         ;;
       9) usage ;;
       0) exit 0 ;;
-      *) echo "Unknown choice: $choice" ;;
+      *) echo "未知选项: $choice" ;;
     esac
   done
 }
@@ -139,7 +153,7 @@ case "$ACTION" in
     usage
     ;;
   *)
-    echo "Unknown action: $ACTION"
+    echo "未知操作: $ACTION"
     usage
     exit 1
     ;;

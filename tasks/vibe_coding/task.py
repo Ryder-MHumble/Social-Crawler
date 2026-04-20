@@ -12,6 +12,12 @@ except ImportError:  # pragma: no cover
     yaml = None
 
 import vibe_coding.config as vc_cfg
+from tasks.common.crawl_planner import (
+    normalize_chunk_size,
+    normalize_parallel_limit,
+    normalize_split_mode,
+    plan_platform_value_jobs,
+)
 from tasks.common.models import TaskJob, TaskSpec, TaskStage
 from tasks.common.template import PresetSeed, TaskDefinition, TaskField, TaskFieldOption, TaskTemplate
 
@@ -25,12 +31,23 @@ PLATFORM_OPTIONS = [
     TaskFieldOption(value=platform, label=label)
     for platform, label in PLATFORM_LABELS.items()
 ]
+JOB_MODE_OPTIONS = [
+    TaskFieldOption(value="auto", label="自动", description="默认优先按平台聚合，必要时再拆成多批 job。"),
+    TaskFieldOption(value="bundle", label="按平台聚合", description="每个平台 1 个 job，内部顺序跑所有关键词或账号。"),
+    TaskFieldOption(value="single", label="逐项拆分", description="平台 x 单关键词/账号 一项一个 job。"),
+    TaskFieldOption(value="chunked", label="按批拆分", description="平台 x N 个关键词/账号 一批一个 job。"),
+]
+BROWSER_PROVIDER_OPTIONS = [
+    TaskFieldOption(value="local", label="本地浏览器"),
+    TaskFieldOption(value="browsermint", label="Browsermint"),
+]
 SAVE_OPTIONS = [
     TaskFieldOption(value="json", label="JSON (Local Default)"),
     TaskFieldOption(value="sqlite", label="SQLite"),
     TaskFieldOption(value="supabase", label="Supabase"),
 ]
 ALLOWED_SAVE_OPTIONS = {option.value for option in SAVE_OPTIONS}
+ALLOWED_BROWSER_PROVIDERS = {option.value for option in BROWSER_PROVIDER_OPTIONS}
 FALLBACK_CONFIG = {
     "default_inputs": {
         "platforms": list(getattr(vc_cfg, "VIBE_CODING_PLATFORMS", ["xhs", "bili"])),
@@ -64,6 +81,12 @@ FALLBACK_CONFIG = {
 }
 _TASK_CONFIG_PATH = Path(__file__).with_name("config.yaml")
 _TASK_CONFIG_WARNING_PREFIX = "[vibe_coding.task]"
+DEFAULT_KEYWORD_JOB_MODE = "auto"
+DEFAULT_KEYWORD_JOB_CHUNK_SIZE = 1
+DEFAULT_KEYWORD_MAX_PARALLEL = 0
+DEFAULT_CREATOR_JOB_MODE = "auto"
+DEFAULT_CREATOR_JOB_CHUNK_SIZE = 1
+DEFAULT_CREATOR_MAX_PARALLEL = 0
 
 
 def _coerce_bool(value: Any, default: bool) -> bool:
@@ -104,6 +127,13 @@ def _csv(value: Any) -> str:
     return ",".join(_sanitize_list(value))
 
 
+def _summarize_job_values(values: Sequence[str], limit: int = 24) -> str:
+    preview = ",".join(str(value).strip() for value in values if str(value).strip())
+    if len(preview) <= limit:
+        return preview
+    return f"{preview[: limit - 3]}..."
+
+
 def _normalize_platforms(value: Any, fallback: list[str]) -> list[str]:
     platforms = _sanitize_list(value) or list(fallback)
     valid = [platform for platform in platforms if platform in PLATFORM_LABELS]
@@ -125,6 +155,11 @@ def _resolve_accounts(specified: Any, whitelist: Any, blacklist: Any) -> list[st
 def _normalize_save_option(value: Any, fallback: str) -> str:
     candidate = str(value).strip() if value is not None else fallback
     return candidate if candidate in ALLOWED_SAVE_OPTIONS else fallback
+
+
+def _normalize_browser_provider(value: Any, fallback: str = "local") -> str:
+    candidate = str(value).strip().lower() if value is not None else fallback
+    return candidate if candidate in ALLOWED_BROWSER_PROVIDERS else fallback
 
 
 def _load_config() -> dict[str, Any]:
@@ -176,6 +211,9 @@ DEFAULT_PARAMS = {
     "search_keywords": _csv(DEFAULT_INPUTS["keywords"]),
     "keyword_whitelist": _csv(DEFAULT_INPUTS["keyword_whitelist"]),
     "keyword_blacklist": _csv(DEFAULT_INPUTS["keyword_blacklist"]),
+    "keyword_job_mode": DEFAULT_KEYWORD_JOB_MODE,
+    "keyword_job_chunk_size": DEFAULT_KEYWORD_JOB_CHUNK_SIZE,
+    "keyword_job_max_parallel": DEFAULT_KEYWORD_MAX_PARALLEL,
     "scenario_words": _csv(DEFAULT_INPUTS["scenario_words"]),
     "max_notes_count": int(DEFAULT_INPUTS["max_notes_count"]),
     "max_notes_per_keyword": int(DEFAULT_INPUTS["max_notes_count"]),
@@ -188,8 +226,13 @@ DEFAULT_PARAMS = {
     "creator_ids": _csv(DEFAULT_INPUTS["specified_account_ids"]),
     "account_whitelist": _csv(DEFAULT_INPUTS["account_whitelist"]),
     "account_blacklist": _csv(DEFAULT_INPUTS["account_blacklist"]),
+    "creator_job_mode": DEFAULT_CREATOR_JOB_MODE,
+    "creator_job_chunk_size": DEFAULT_CREATOR_JOB_CHUNK_SIZE,
+    "creator_job_max_parallel": DEFAULT_CREATOR_MAX_PARALLEL,
     "min_engagement": int(DEFAULT_INPUTS["min_engagement"]),
     "keyword_score_threshold": int(DEFAULT_INPUTS["keyword_score_threshold"]),
+    "browser_provider": "local",
+    "browser_session_id": "",
     "save_option": _normalize_save_option(DEFAULT_INPUTS.get("save_option"), "json"),
 }
 
@@ -211,6 +254,9 @@ def get_template() -> TaskTemplate:
             TaskField(key="keywords", component="textarea", label="关键词", default=DEFAULT_PARAMS["keywords"], group="采集范围", visible_when={"enable_keyword_search": True}),
             TaskField(key="keyword_whitelist", component="textarea", label="关键词白名单", default=DEFAULT_PARAMS["keyword_whitelist"], group="采集范围", visible_when={"enable_keyword_search": True}),
             TaskField(key="keyword_blacklist", component="textarea", label="关键词黑名单", default=DEFAULT_PARAMS["keyword_blacklist"], group="采集范围", visible_when={"enable_keyword_search": True}),
+            TaskField(key="keyword_job_mode", component="select", label="关键词任务拆分", default=DEFAULT_PARAMS["keyword_job_mode"], description="决定关键词是按平台聚合、逐项拆分还是按批拆分成多个 job。", group="执行编排", options=JOB_MODE_OPTIONS, visible_when={"enable_keyword_search": True}),
+            TaskField(key="keyword_job_chunk_size", component="number", label="关键词每批数量", default=DEFAULT_PARAMS["keyword_job_chunk_size"], description="仅在按批拆分时生效。", group="执行编排", validation={"min": 1, "max": 100}, visible_when={"enable_keyword_search": True, "keyword_job_mode": "chunked"}),
+            TaskField(key="keyword_job_max_parallel", component="number", label="关键词并发上限", default=DEFAULT_PARAMS["keyword_job_max_parallel"], description="填 0 表示自动：默认单平台最多 2 个并发，多平台默认每个平台 1 个 job。", group="执行编排", validation={"min": 0, "max": 64}, visible_when={"enable_keyword_search": True}),
             TaskField(key="scenario_words", component="textarea", label="场景词", default=DEFAULT_PARAMS["scenario_words"], group="采集范围", visible_when={"enable_keyword_search": True}),
             TaskField(key="max_notes_count", component="number", label="每个平台 Top 帖子数", default=DEFAULT_PARAMS["max_notes_count"], group="内容控制", validation={"min": 1, "max": 100}),
             TaskField(key="min_engagement", component="number", label="最低互动量", default=DEFAULT_PARAMS["min_engagement"], group="内容控制", validation={"min": 0}),
@@ -222,6 +268,11 @@ def get_template() -> TaskTemplate:
             TaskField(key="specified_account_ids", component="textarea", label="指定账号 ID", default=DEFAULT_PARAMS["specified_account_ids"], group="账号定向", visible_when={"enable_account_crawl": True}),
             TaskField(key="account_whitelist", component="textarea", label="账号白名单", default=DEFAULT_PARAMS["account_whitelist"], group="账号定向", visible_when={"enable_account_crawl": True}),
             TaskField(key="account_blacklist", component="textarea", label="账号黑名单", default=DEFAULT_PARAMS["account_blacklist"], group="账号定向", visible_when={"enable_account_crawl": True}),
+            TaskField(key="creator_job_mode", component="select", label="账号任务拆分", default=DEFAULT_PARAMS["creator_job_mode"], description="决定账号抓取是按平台聚合、逐账号拆分还是按批拆分。", group="执行编排", options=JOB_MODE_OPTIONS, visible_when={"enable_account_crawl": True}),
+            TaskField(key="creator_job_chunk_size", component="number", label="账号每批数量", default=DEFAULT_PARAMS["creator_job_chunk_size"], description="仅在按批拆分时生效。", group="执行编排", validation={"min": 1, "max": 100}, visible_when={"enable_account_crawl": True, "creator_job_mode": "chunked"}),
+            TaskField(key="creator_job_max_parallel", component="number", label="账号并发上限", default=DEFAULT_PARAMS["creator_job_max_parallel"], description="填 0 表示自动，系统会优先保持每个平台 1 个活跃 job。", group="执行编排", validation={"min": 0, "max": 64}, visible_when={"enable_account_crawl": True}),
+            TaskField(key="browser_provider", component="select", label="浏览器提供方", default=DEFAULT_PARAMS["browser_provider"], group="运行配置", options=BROWSER_PROVIDER_OPTIONS),
+            TaskField(key="browser_session_id", component="select", label="Browsermint 会话", default=DEFAULT_PARAMS["browser_session_id"], group="运行配置", options=[], visible_when={"browser_provider": "browsermint"}, helper_text="选择一个已登录的 Browsermint 会话。启动任务时会即时换取新的 CDP 连接信息。"),
             TaskField(key="save_option", component="select", label="保存方式", default=DEFAULT_PARAMS["save_option"], group="运行配置", options=SAVE_OPTIONS),
         ],
     )
@@ -248,6 +299,14 @@ def normalize_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]:
         raw.get("account_whitelist", DEFAULT_PARAMS["account_whitelist"]),
         raw.get("account_blacklist", DEFAULT_PARAMS["account_blacklist"]),
     )
+    keyword_job_mode = normalize_split_mode(
+        raw.get("keyword_job_mode"),
+        DEFAULT_PARAMS["keyword_job_mode"],
+    )
+    creator_job_mode = normalize_split_mode(
+        raw.get("creator_job_mode"),
+        DEFAULT_PARAMS["creator_job_mode"],
+    )
     params = {
         "platforms": _normalize_platforms(raw.get("platforms"), DEFAULT_PARAMS["platforms"]),
         "enable_keyword_search": _coerce_bool(raw.get("enable_keyword_search"), DEFAULT_PARAMS["enable_keyword_search"]),
@@ -255,6 +314,15 @@ def normalize_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]:
         "search_keywords": _csv(resolved_keywords),
         "keyword_whitelist": _csv(raw.get("keyword_whitelist", DEFAULT_PARAMS["keyword_whitelist"])),
         "keyword_blacklist": _csv(raw.get("keyword_blacklist", DEFAULT_PARAMS["keyword_blacklist"])),
+        "keyword_job_mode": keyword_job_mode,
+        "keyword_job_chunk_size": normalize_chunk_size(
+            raw.get("keyword_job_chunk_size"),
+            DEFAULT_PARAMS["keyword_job_chunk_size"],
+        ),
+        "keyword_job_max_parallel": normalize_parallel_limit(
+            raw.get("keyword_job_max_parallel"),
+            DEFAULT_PARAMS["keyword_job_max_parallel"],
+        ),
         "scenario_words": _csv(raw.get("scenario_words", DEFAULT_PARAMS["scenario_words"])),
         "max_notes_count": max_notes_count,
         "max_notes_per_keyword": max_notes_count,
@@ -267,10 +335,23 @@ def normalize_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]:
         "creator_ids": _csv(resolved_accounts),
         "account_whitelist": _csv(raw.get("account_whitelist", DEFAULT_PARAMS["account_whitelist"])),
         "account_blacklist": _csv(raw.get("account_blacklist", DEFAULT_PARAMS["account_blacklist"])),
+        "creator_job_mode": creator_job_mode,
+        "creator_job_chunk_size": normalize_chunk_size(
+            raw.get("creator_job_chunk_size"),
+            DEFAULT_PARAMS["creator_job_chunk_size"],
+        ),
+        "creator_job_max_parallel": normalize_parallel_limit(
+            raw.get("creator_job_max_parallel"),
+            DEFAULT_PARAMS["creator_job_max_parallel"],
+        ),
         "min_engagement": _coerce_int(raw.get("min_engagement"), DEFAULT_PARAMS["min_engagement"]),
         "keyword_score_threshold": _coerce_int(raw.get("keyword_score_threshold"), DEFAULT_PARAMS["keyword_score_threshold"]),
+        "browser_provider": _normalize_browser_provider(raw.get("browser_provider"), DEFAULT_PARAMS["browser_provider"]),
+        "browser_session_id": str(raw.get("browser_session_id") or "").strip(),
         "save_option": _normalize_save_option(raw.get("save_option"), DEFAULT_PARAMS["save_option"]),
     }
+    if params["browser_provider"] == "browsermint":
+        params["save_option"] = "sqlite"
     if params["max_notes_count"] < 1:
         raise ValueError("max_notes_count must be greater than 0.")
     if params["max_comments_count_singlenotes"] < 1:
@@ -301,15 +382,41 @@ def build_task(
             "platforms": _sanitize_list(os.getenv("VIBE_PLATFORMS", "")) or list(DEFAULT_PARAMS["platforms"]),
             "enable_keyword_search": _coerce_bool(os.getenv("VIBE_ENABLE_KEYWORD_SEARCH"), DEFAULT_PARAMS["enable_keyword_search"]),
             "enable_account_crawl": _coerce_bool(os.getenv("VIBE_ENABLE_ACCOUNT_CRAWL"), DEFAULT_PARAMS["enable_account_crawl"]),
+            "keyword_job_mode": os.getenv("VIBE_KEYWORD_JOB_MODE", DEFAULT_PARAMS["keyword_job_mode"]),
+            "keyword_job_chunk_size": os.getenv("VIBE_KEYWORD_JOB_CHUNK_SIZE", str(DEFAULT_PARAMS["keyword_job_chunk_size"])),
+            "keyword_job_max_parallel": os.getenv("VIBE_KEYWORD_JOB_MAX_PARALLEL", str(DEFAULT_PARAMS["keyword_job_max_parallel"])),
+            "creator_job_mode": os.getenv("VIBE_CREATOR_JOB_MODE", DEFAULT_PARAMS["creator_job_mode"]),
+            "creator_job_chunk_size": os.getenv("VIBE_CREATOR_JOB_CHUNK_SIZE", str(DEFAULT_PARAMS["creator_job_chunk_size"])),
+            "creator_job_max_parallel": os.getenv("VIBE_CREATOR_JOB_MAX_PARALLEL", str(DEFAULT_PARAMS["creator_job_max_parallel"])),
+            "browser_provider": os.getenv("BROWSER_PROVIDER", DEFAULT_PARAMS["browser_provider"]),
+            "browser_session_id": os.getenv("BROWSERMINT_SESSION_ID", DEFAULT_PARAMS["browser_session_id"]),
         }
     normalized = normalize_params(params)
     stages: list[TaskStage] = []
 
     if normalized["enable_keyword_search"]:
+        job_slices, stage_max_parallel = plan_platform_value_jobs(
+            normalized["platforms"],
+            _sanitize_list(normalized["keywords"]),
+            split_mode=normalized["keyword_job_mode"],
+            chunk_size=normalized["keyword_job_chunk_size"],
+            max_parallel=normalized["keyword_job_max_parallel"],
+        )
         jobs = [
             TaskJob(
-                key=f"search_{platform}",
-                name=f"{PLATFORM_LABELS.get(platform, platform)} vibe search crawl",
+                key=(
+                    f"search_{job_slice.platform}_{job_slice.group_index:02d}"
+                    if job_slice.group_total > 1
+                    else f"search_{job_slice.platform}"
+                ),
+                name=(
+                    f"{PLATFORM_LABELS.get(job_slice.platform, job_slice.platform)} vibe search crawl"
+                    + (
+                        f" [{job_slice.group_index}/{job_slice.group_total}] {_summarize_job_values(job_slice.values)}"
+                        if job_slice.group_total > 1
+                        else (f" {_summarize_job_values(job_slice.values)}" if len(job_slice.values) == 1 else "")
+                    )
+                ),
                 command=[
                     python_executable,
                     "-m",
@@ -317,9 +424,9 @@ def build_task(
                     "--enabled",
                     "true",
                     "--platform",
-                    platform,
+                    job_slice.platform,
                     "--search-keywords",
-                    normalized["keywords"],
+                    job_slice.csv_value,
                     "--max-notes-per-keyword",
                     str(normalized["max_notes_count"]),
                     "--min-engagement",
@@ -329,7 +436,7 @@ def build_task(
                 ],
                 cwd=project_root,
             )
-            for platform in normalized["platforms"]
+            for job_slice in job_slices
         ]
         stages.append(
             TaskStage(
@@ -337,24 +444,43 @@ def build_task(
                 name="Vibe keyword search crawl",
                 jobs=jobs,
                 concurrent=True,
+                max_parallel=stage_max_parallel or None,
                 abort_on_failure=False,
             )
         )
 
     if normalized["enable_account_crawl"]:
+        job_slices, stage_max_parallel = plan_platform_value_jobs(
+            normalized["platforms"],
+            _sanitize_list(normalized["specified_account_ids"]),
+            split_mode=normalized["creator_job_mode"],
+            chunk_size=normalized["creator_job_chunk_size"],
+            max_parallel=normalized["creator_job_max_parallel"],
+        )
         jobs = [
             TaskJob(
-                key=f"creator_{platform}",
-                name=f"{PLATFORM_LABELS.get(platform, platform)} vibe creator crawl",
+                key=(
+                    f"creator_{job_slice.platform}_{job_slice.group_index:02d}"
+                    if job_slice.group_total > 1
+                    else f"creator_{job_slice.platform}"
+                ),
+                name=(
+                    f"{PLATFORM_LABELS.get(job_slice.platform, job_slice.platform)} vibe creator crawl"
+                    + (
+                        f" [{job_slice.group_index}/{job_slice.group_total}] {_summarize_job_values(job_slice.values)}"
+                        if job_slice.group_total > 1
+                        else (f" {_summarize_job_values(job_slice.values)}" if len(job_slice.values) == 1 else "")
+                    )
+                ),
                 command=[
                     python_executable,
                     "main.py",
                     "--platform",
-                    platform,
+                    job_slice.platform,
                     "--type",
                     "creator",
                     "--creator_id",
-                    normalized["specified_account_ids"],
+                    job_slice.csv_value,
                     "--max_notes_count",
                     str(normalized["max_notes_count"]),
                     "--get_comment",
@@ -368,7 +494,7 @@ def build_task(
                 ],
                 cwd=project_root,
             )
-            for platform in normalized["platforms"]
+            for job_slice in job_slices
         ]
         stages.append(
             TaskStage(
@@ -376,6 +502,7 @@ def build_task(
                 name="Vibe creator target crawl",
                 jobs=jobs,
                 concurrent=True,
+                max_parallel=stage_max_parallel or None,
                 abort_on_failure=False,
             )
         )
@@ -395,6 +522,7 @@ def build_task(
             f"Creator crawl: {'enabled' if normalized['enable_account_crawl'] else 'disabled'}",
             f"Keywords: {normalized['keywords'] or 'n/a'}",
             f"Creator IDs: {normalized['specified_account_ids'] or 'n/a'}",
+            f"Browser: {normalized['browser_provider']} / {normalized['browser_session_id'] or 'local-session'}",
             f"Save option: {normalized['save_option']}",
         ],
         stages=stages,

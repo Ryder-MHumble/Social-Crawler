@@ -16,33 +16,25 @@ tasks/
 ### macOS / Linux
 
 ```bash
-./run_crawl.sh
-./run_crawl.sh sentiment_monitor
-./run_crawl.sh creator_outreach
-./run_crawl.sh vibe_coding
+./social_crawler.sh task --list
+./social_crawler.sh task sentiment_monitor
+./social_crawler.sh task creator_outreach
+./social_crawler.sh task vibe_coding
 ```
 
 ### Windows PowerShell
 
 ```powershell
-.\run_crawl.ps1
-.\run_crawl.ps1 sentiment_monitor
-.\run_crawl.ps1 creator_outreach
-.\run_crawl.ps1 vibe_coding
-```
-
-### Windows CMD
-
-```cmd
-run_crawl.cmd
-run_crawl.cmd sentiment_monitor
-run_crawl.cmd creator_outreach
-run_crawl.cmd vibe_coding
+.\social_crawler.ps1 task --list
+.\social_crawler.ps1 task sentiment_monitor
+.\social_crawler.ps1 task creator_outreach
+.\social_crawler.ps1 task vibe_coding
 ```
 
 ## Notes
 
 - Running without parameters opens the interactive menu.
+- The old `run_crawl.*` wrappers were moved to `scripts/compat/` to keep the project root clean.
 - All tasks use the same runtime shell:
   - task-specific welcome page
   - live progress view

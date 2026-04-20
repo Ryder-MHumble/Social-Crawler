@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # Copyright (c) 2025 relakkes@gmail.com
 #
 # This file is part of MediaCrawler project.
@@ -6,202 +6,198 @@
 # GitHub: https://github.com/NanmiCoder
 # Licensed under NON-COMMERCIAL LEARNING LICENSE 1.1
 #
+# 声明：本代码仅供学习和研究目的使用。使用者应遵守以下原则：
+# 1. 不得用于任何商业用途。
+# 2. 使用时应遵守目标平台使用条款与 robots 规则。
+# 3. 不得进行大规模抓取或对平台造成运营干扰。
+# 4. 应合理控制请求频率，避免给目标平台带来不必要负担。
+# 5. 不得用于任何非法或不当用途。
 
-# 澹版槑锛氭湰浠ｇ爜浠呬緵瀛︿範鍜岀爺绌剁洰鐨勪娇鐢ㄣ€備娇鐢ㄨ€呭簲閬靛畧浠ヤ笅鍘熷垯锛?
-# 1. 涓嶅緱鐢ㄤ簬浠讳綍鍟嗕笟鐢ㄩ€斻€?
-# 2. 浣跨敤鏃跺簲閬靛畧鐩爣骞冲彴鐨勪娇鐢ㄦ潯娆惧拰robots.txt瑙勫垯銆?
-# 3. 涓嶅緱杩涜澶ц妯＄埇鍙栨垨瀵瑰钩鍙伴€犳垚杩愯惀骞叉壈銆?
-# 4. 搴斿悎鐞嗘帶鍒惰姹傞鐜囷紝閬垮厤缁欑洰鏍囧钩鍙板甫鏉ヤ笉蹇呰鐨勮礋鎷呫€?
-# 5. 涓嶅緱鐢ㄤ簬浠讳綍闈炴硶鎴栦笉褰撶殑鐢ㄩ€斻€?
-#
-# 璇︾粏璁稿彲鏉℃璇峰弬闃呴」鐩牴鐩綍涓嬬殑LICENSE鏂囦欢銆?
-# 浣跨敤鏈唬鐮佸嵆琛ㄧず鎮ㄥ悓鎰忛伒瀹堜笂杩板師鍒欏拰LICENSE涓殑鎵€鏈夋潯娆俱€?
+from __future__ import annotations
 
 import os
 from pathlib import Path
 
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except ImportError:
     pass
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw.strip())
+    except ValueError:
+        return default
+
+
+def _env_csv(name: str, default: list[str]) -> list[str]:
+    raw = os.getenv(name)
+    if raw is None:
+        return list(default)
+    values = [item.strip() for item in raw.split(",") if item.strip()]
+    if not values:
+        return list(default)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(value)
+    return deduped
+
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_RUNTIME_DIR = os.getenv("SOCIAL_CRAWLER_RUNTIME_DIR", str(_PROJECT_ROOT / "runtime"))
 _DEFAULT_DATA_DIR = os.getenv("SOCIAL_CRAWLER_DATA_DIR", str(Path(_DEFAULT_RUNTIME_DIR) / "data"))
+
 # Basic configuration
-PLATFORM = "xhs"  # Platform, xhs | dy | ks | bili | wb | tieba | zhihu
-KEYWORDS = "缂栫▼鍓笟,缂栫▼鍏艰亴"  # Keyword search configuration, separated by English commas
+PLATFORM = os.getenv("PLATFORM", "xhs")  # xhs | dy | ks | bili | wb | tieba | zhihu
+KEYWORDS = os.getenv("KEYWORDS", "编程副业,编程兼职")  # Multiple keywords separated by comma
 
 # ==================== Content Relevance Filter ====================
-# Enable to filter out content that doesn't actually mention the target entities.
-# Platform search is fuzzy 鈥?"涓叧鏉戜汉宸ユ櫤鑳界爺绌堕櫌" returns lots of generic AI content.
-# When enabled, only content containing at least one RELEVANCE_MUST_CONTAIN keyword
-# in its title or description will be saved. Comments are saved only if their parent
-# content passed the filter.
-ENABLE_RELEVANCE_FILTER = True
+# Enable to keep only content related to your target entities.
+# In search mode this helps remove fuzzy-match noise from platform search results.
+ENABLE_RELEVANCE_FILTER = _env_bool("ENABLE_RELEVANCE_FILTER", True)
 
-# Content MUST contain at least one of these strings (case-insensitive for English)
-# to be considered relevant. These should be the core entity names you care about.
-RELEVANCE_MUST_CONTAIN = [
-    "ai_research_institute",
-    "zhongguancun",
-    "beijing_zhongguancun_college",
-    "zhongguancun_ai_research_institute",
-    "鏅烘簮",
-    "娌冲",
-    "鍒涙櫤",
-    "sanxiao_ke",
-    "sanxiao_zhi",
-]
+# Content must contain at least one keyword in title/description.
+# You can override this list via env:
+# RELEVANCE_MUST_CONTAIN="北京中关村学院,中关村学院,中关村人工智能研究院"
+RELEVANCE_MUST_CONTAIN = _env_csv(
+    "RELEVANCE_MUST_CONTAIN",
+    [
+        "北京中关村学院",
+        "中关村学院",
+        "中关村人工智能研究院",
+        "深圳河套",
+        "上海创智"
+    ],
+)
 
-# Content containing ANY of these strings will be excluded, even if it passes the above filter.
-# Use this to block obvious spam/ad patterns.
-RELEVANCE_EXCLUDE_KEYWORDS: list[str] = [
-    # Examples (uncomment or add your own):
-    # "鎷涜仒", "骞垮憡", "杞彂鎶藉", "鐐硅禐閫佺鍒?,
-]
+# Exclude content containing any keyword below.
+# Optional env override:
+# RELEVANCE_EXCLUDE_KEYWORDS="招聘,广告,引流,抽奖"
+RELEVANCE_EXCLUDE_KEYWORDS: list[str] = _env_csv("RELEVANCE_EXCLUDE_KEYWORDS", [])
 
-# Minimum total engagement (liked_count + comment_count) for a post to be saved.
-# Posts with fewer combined interactions are treated as low-quality / spam and skipped.
-# Set to 0 to disable.
-MIN_CONTENT_ENGAGEMENT = 0  # 涓存椂璋冩暣涓?0锛岀敤浜庢帓鏌ラ棶棰?
+# Relevance matching mode:
+# - strict: keyword must be fully contained in title/description
+# - loose : allow partial contiguous overlap (more tolerant to fuzzy platform text)
+RELEVANCE_MATCH_MODE = os.getenv("RELEVANCE_MATCH_MODE", "loose").strip().lower()
+if RELEVANCE_MATCH_MODE not in {"strict", "loose"}:
+    RELEVANCE_MATCH_MODE = "loose"
 
-# Minimum character length for a comment to be saved.
-# Comments shorter than this (e.g. "鍝堝搱", "666", single emoji) are skipped.
-# Set to 0 to disable.
-MIN_COMMENT_LENGTH = 5
+# Loose mode thresholds
+RELEVANCE_MIN_MATCH_CHARS = max(2, _env_int("RELEVANCE_MIN_MATCH_CHARS", 3))
+RELEVANCE_MIN_MATCH_RATIO = _env_float("RELEVANCE_MIN_MATCH_RATIO", 0.3)
+RELEVANCE_MIN_MATCH_RATIO = min(1.0, max(0.1, RELEVANCE_MIN_MATCH_RATIO))
 
-# ==================== 瀹樻柟璐﹀彿鐖彇閰嶇疆 ====================
-# 鏄惁鍦ㄦ瘡娆＄埇鍙栨椂棰濆鎶撳彇鎸囧畾瀹樻柟璐﹀彿鐨勫唴瀹癸紙鍦ㄥ叧閿瘝鎼滅储涔嬪悗杩愯锛?
-# 瀹樻柟璐﹀彿鍐呭浼氱粫杩囩浉鍏虫€ц繃婊わ紝source_keyword 璁板綍涓?"@{璐﹀彿鍚嶇О}" 浠ュ尯鍒嗘潵婧?
-ENABLE_OFFICIAL_ACCOUNTS_CRAWL = True
+# Minimum engagement (liked_count + comment_count). 0 disables this rule.
+MIN_CONTENT_ENGAGEMENT = max(0, _env_int("MIN_CONTENT_ENGAGEMENT", 0))
 
-# 灏忕孩涔﹀畼鏂硅处鍙峰垪琛紙鐖彇鍏舵墍鏈夊笘瀛愬拰璇勮锛?
+# Minimum comment length. 0 disables this rule.
+MIN_COMMENT_LENGTH = max(0, _env_int("MIN_COMMENT_LENGTH", 5))
+
+# ==================== Official Accounts ====================
+# Whether to crawl specified official accounts in addition to keyword search.
+ENABLE_OFFICIAL_ACCOUNTS_CRAWL = _env_bool("ENABLE_OFFICIAL_ACCOUNTS_CRAWL", True)
+
+# Xiaohongshu official accounts
 XHS_OFFICIAL_ACCOUNTS = [
     {"user_id": "5bebb72379896c00014f3295", "name": "beijing_zhongguancun_college"},
-    {"user_id": "68685a82000000001d009ebb", "name": "涓婃捣鍒涙櫤瀛﹂櫌"},
+    {"user_id": "68685a82000000001d009ebb", "name": "shanghai_chuangzhi_college"},
 ]
 
-# Bilibili 瀹樻柟璐﹀彿鍒楄〃锛堢埇鍙栧叾鎵€鏈夎棰戝拰璇勮锛?
+# Bilibili official accounts
 BILI_OFFICIAL_ACCOUNTS = [
     {"uid": 85843243, "name": "beijing_zhongguancun_college"},
 ]
 
-LOGIN_TYPE = "qrcode"  # qrcode or phone or cookie
-COOKIES = ""
-CRAWLER_TYPE = (
-    "search"  # Crawling type, search (keyword search) | detail (post details) | creator (creator homepage data)
-)
-# Whether to enable IP proxy
-ENABLE_IP_PROXY = False
+LOGIN_TYPE = os.getenv("LOGIN_TYPE", "qrcode")  # qrcode | phone | cookie
+COOKIES = os.getenv("COOKIES", "")
+CRAWLER_TYPE = os.getenv("CRAWLER_TYPE", "search")  # search | detail | creator
 
-# Number of proxy IP pools
-IP_PROXY_POOL_COUNT = 2
+# Whether to enable proxy
+ENABLE_IP_PROXY = _env_bool("ENABLE_IP_PROXY", False)
+IP_PROXY_POOL_COUNT = max(1, _env_int("IP_PROXY_POOL_COUNT", 2))
+IP_PROXY_PROVIDER_NAME = os.getenv("IP_PROXY_PROVIDER_NAME", "kuaidaili")  # kuaidaili | wandouhttp
 
-# Proxy IP provider name
-IP_PROXY_PROVIDER_NAME = "kuaidaili"  # kuaidaili | wandouhttp
+# Browser runtime behavior
+HEADLESS = _env_bool("HEADLESS", False)
+SAVE_LOGIN_STATE = _env_bool("SAVE_LOGIN_STATE", True)
 
-# Setting to True will not open the browser (headless browser)
-# Setting False will open a browser
-# If Xiaohongshu keeps scanning the code to log in but fails, open the browser and manually pass the sliding verification code.
-# If Douyin keeps prompting failure, open the browser and see if mobile phone number verification appears after scanning the QR code to log in. If it does, manually go through it and try again.
-HEADLESS = False
-
-# Whether to save login status
-SAVE_LOGIN_STATE = True
-
-# ==================== CDP (Chrome DevTools Protocol) Configuration ====================
-# Whether to enable CDP mode - use the user's existing Chrome/Edge browser to crawl, providing better anti-detection capabilities
-# Once enabled, the user's Chrome/Edge browser will be automatically detected and started, and controlled through the CDP protocol.
-# This method uses the real browser environment, including the user's extensions, cookies and settings, greatly reducing the risk of detection.
-CDP_DEBUG_PORT = 9222
+# ==================== CDP (Chrome DevTools Protocol) ====================
+CDP_DEBUG_PORT = _env_int("CDP_DEBUG_PORT", 9222)
 
 # Remote CDP WebSocket URL (optional)
-# When set, skip launching a local Chrome and connect directly to a remote browser
-# service (e.g. a hosted browserless / browsergrid endpoint). Takes precedence over
-# the local CDP launch flow; ENABLE_CDP_MODE is implied.
-# Example: wss://browser.example.com/ws/sessions/<id>/cdp/devtools/browser/<browser-id>?token=...
 CDP_REMOTE_WS_URL = os.getenv("CDP_REMOTE_WS_URL", "")
 
 # Automatically enable CDP mode when a remote URL is configured
 ENABLE_CDP_MODE = bool(CDP_REMOTE_WS_URL)
 
-# Optional HTTP headers sent during the CDP WebSocket handshake (dict).
-# Use for remote services that require an Authorization header rather than a query
-# string token. Leave empty when the token is embedded in CDP_REMOTE_WS_URL.
+# Optional headers for remote CDP handshake
 CDP_REMOTE_HEADERS: dict[str, str] = {}
 
-# Custom browser path (optional)
-# If it is empty, the system will automatically detect the installation path of Chrome/Edge
-# Windows example: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
-# macOS example: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-CUSTOM_BROWSER_PATH = ""
+# Optional local browser binary path
+CUSTOM_BROWSER_PATH = os.getenv("CUSTOM_BROWSER_PATH", "")
+CDP_HEADLESS = _env_bool("CDP_HEADLESS", False)
+BROWSER_LAUNCH_TIMEOUT = max(10, _env_int("BROWSER_LAUNCH_TIMEOUT", 60))
+AUTO_CLOSE_BROWSER = _env_bool("AUTO_CLOSE_BROWSER", False)
 
-# Whether to enable headless mode in CDP mode
-# NOTE: Even if set to True, some anti-detection features may not work well in headless mode
-CDP_HEADLESS = False
-
-# Browser startup timeout (seconds)
-BROWSER_LAUNCH_TIMEOUT = 60
-
-# Whether to automatically close the browser when the program ends
-# Set to False to keep the browser running, preserving cookies and login state across runs
-AUTO_CLOSE_BROWSER = False
-
-# Data saving type option configuration. It is best to save to DB, with deduplication function.
+# Storage settings
 # Supported: json | csv | excel | sqlite | db | postgres | mongodb | supabase
-# Default to local JSON storage for safer out-of-box usage.
-SAVE_DATA_OPTION = "json"  # json or csv or excel or sqlite or db or postgres or mongodb or supabase
-
-# Data saving path, if not specified by default, it will be saved to the data folder.
+SAVE_DATA_OPTION = os.getenv("SAVE_DATA_OPTION", "json")
 SAVE_DATA_PATH = _DEFAULT_DATA_DIR
 
-# Browser file configuration cached by the user's browser
-USER_DATA_DIR = "%s_user_data_dir"  # %s will be replaced by platform name
+# Browser user data directory pattern
+USER_DATA_DIR = "%s_user_data_dir"  # %s is platform name
 
-# The number of pages to start crawling starts from the first page by default
-START_PAGE = 1
+# Crawl controls
+START_PAGE = max(1, _env_int("START_PAGE", 1))
+CRAWLER_MAX_NOTES_COUNT = max(1, _env_int("CRAWLER_MAX_NOTES_COUNT", 30))
+MAX_CONCURRENCY_NUM = max(1, _env_int("MAX_CONCURRENCY_NUM", 1))
+ENABLE_GET_MEIDAS = _env_bool("ENABLE_GET_MEIDAS", False)
+ENABLE_GET_COMMENTS = _env_bool("ENABLE_GET_COMMENTS", True)
+CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES = max(
+    1,
+    _env_int("CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES", 20),
+)
+ENABLE_GET_SUB_COMMENTS = _env_bool("ENABLE_GET_SUB_COMMENTS", True)
 
-# Control the number of crawled videos/posts per keyword per run
-# Note: relevance filter will further reduce this to only matching posts
-CRAWLER_MAX_NOTES_COUNT = 30
-
-# Controlling the number of concurrent crawlers (1 = safest, looks most human-like)
-MAX_CONCURRENCY_NUM = 1
-
-# Whether to enable crawling media mode (including image or video resources), crawling media is not enabled by default
-ENABLE_GET_MEIDAS = False
-
-# Whether to enable comment crawling mode. Comment crawling is enabled by default.
-ENABLE_GET_COMMENTS = True
-
-# Control the number of crawled first-level comments (single video/post)
-CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES = 20
-
-# Whether to enable the mode of crawling second-level comments (replies).
-# Enabled 鈥?captures full discussion threads for richer opinion mining data.
-ENABLE_GET_SUB_COMMENTS = True
-
-# word cloud related
-# Whether to enable generating comment word clouds
-ENABLE_GET_WORDCLOUD = False
-# Custom words and their groups
-# Add rule: xx:yy where xx is a custom-added phrase, and yy is the group name to which the phrase xx is assigned.
+# Word cloud
+ENABLE_GET_WORDCLOUD = _env_bool("ENABLE_GET_WORDCLOUD", False)
 CUSTOM_WORDS = {
-    "闆跺嚑": "骞翠唤",  # Recognize "zero points" as a whole
-    "gaopin_ci": "zhuanye_shuyu",  # Example custom words
+    "零几": "年份",
+    "gaopin_ci": "zhuanye_shuyu",
 }
-
-# Deactivate (disabled) word file path
 STOP_WORDS_FILE = str(_PROJECT_ROOT / "docs" / "hit_stopwords.txt")
-
-# Chinese font file path
 FONT_PATH = str(_PROJECT_ROOT / "docs" / "STZHONGS.TTF")
 
-# Crawl interval (seconds) 鈥?random sleep between requests
-# Higher = safer. Recommended: 3-5 for normal use, 5-10 if you've been warned
-CRAWLER_MAX_SLEEP_SEC = 5
+# Request sleep interval (seconds)
+CRAWLER_MAX_SLEEP_SEC = max(0, _env_int("CRAWLER_MAX_SLEEP_SEC", 5))
 
 from .bilibili_config import *
 from .xhs_config import *
@@ -211,4 +207,3 @@ from .weibo_config import *
 from .tieba_config import *
 from .zhihu_config import *
 from .vibe_coding_config import *
-

@@ -23,7 +23,8 @@
 ```text
 social_crawler.sh/.ps1 (统一入口)
   -> task/dev/prod 命令分发
-run_crawl.sh/.ps1/.cmd (兼容入口，转发到统一入口)
+scripts/launcher/dev.sh + prod.sh (内部实现，不建议直接调用)
+scripts/compat/run_crawl.sh/.ps1/.cmd (兼容入口，转发到统一入口)
   -> apps/crawler/run_tasks.py
     -> tasks/runner/run_crawl.py (任务选择/--list/--dry-run)
       -> tasks/*/task.py (构建 TaskSpec)
@@ -113,32 +114,24 @@ jisu_crypto=
 .\social_crawler.ps1 prod logs -f
 ```
 
-### 2) 任务中心 CLI（兼容入口）
+### 2) 任务中心 CLI
 
-不带参数时会进入交互式菜单。
+任务执行也统一走 `social_crawler.sh/.ps1 task ...`。
 
 ```bash
 # macOS / Linux
-./run_crawl.sh
-./run_crawl.sh --list
-./run_crawl.sh --dry-run sentiment_monitor
-./run_crawl.sh sentiment_monitor
-./run_crawl.sh creator_outreach
-./run_crawl.sh vibe_coding
+./social_crawler.sh task --list
+./social_crawler.sh task --dry-run sentiment_monitor
+./social_crawler.sh task sentiment_monitor
+./social_crawler.sh task creator_outreach
+./social_crawler.sh task vibe_coding
 ```
 
 ```powershell
 # Windows PowerShell
-.\run_crawl.ps1
-.\run_crawl.ps1 --list
-.\run_crawl.ps1 --dry-run sentiment_monitor
-.\run_crawl.ps1 sentiment_monitor
-```
-
-```cmd
-:: Windows CMD
-run_crawl.cmd --list
-run_crawl.cmd sentiment_monitor
+.\social_crawler.ps1 task --list
+.\social_crawler.ps1 task --dry-run sentiment_monitor
+.\social_crawler.ps1 task sentiment_monitor
 ```
 
 ### 3) 旧单平台入口
@@ -251,8 +244,9 @@ uv run pytest tests/integration
 ## 兼容性
 
 - 主入口是 `social_crawler.sh/.ps1`。
-- `run_crawl.sh/.ps1/.cmd` 和 `main.py` 会打印 `[Deprecated Entry]`，表示它们仍可用，但已经不是主入口。
-- `start_dev_local.sh`、`start_prod_server.sh` 仍可单独调用，但建议通过统一入口调用。
+- 根目录只保留统一入口脚本；旧包装脚本已移到 `scripts/compat/`。
+- `scripts/compat/run_crawl.sh/.ps1/.cmd` 和 `main.py` 仍可用，但已经不是主入口。
+- dev/prod 的底层脚本已移到 `scripts/launcher/`，建议只通过统一入口调用。
 - 新功能优先围绕 `tasks/`、`api/`、`frontend/task_center/` 演进。
 
 ## 合规与许可

@@ -6,8 +6,8 @@ import signal
 import subprocess
 import threading
 import time
-import uuid
 from collections import deque
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -100,6 +100,7 @@ def serialize_run_context(context: TaskRunContext) -> dict[str, Any]:
                 "key": runtime.stage.key,
                 "name": runtime.stage.name,
                 "concurrent": runtime.stage.concurrent,
+                "max_parallel": runtime.stage.max_parallel,
                 "abort_on_failure": runtime.stage.abort_on_failure,
                 "status": runtime.status,
                 "jobs": [
@@ -257,7 +258,14 @@ class TaskRuntimeExecutor:
         event_handler: RuntimeEventHandler | None,
     ) -> None:
         if stage_runtime.stage.concurrent:
-            self._run_batch(context, stage_runtime, stage_runtime.jobs, stop_event, event_handler)
+            self._run_batch(
+                context,
+                stage_runtime,
+                stage_runtime.jobs,
+                stop_event,
+                event_handler,
+                max_parallel=stage_runtime.stage.max_parallel,
+            )
             return
 
         for index, runtime in enumerate(stage_runtime.jobs):
@@ -291,20 +299,34 @@ class TaskRuntimeExecutor:
         runtimes: list[JobRuntime],
         stop_event: threading.Event,
         event_handler: RuntimeEventHandler | None,
+        max_parallel: int | None = None,
     ) -> None:
         if not runtimes:
             stage_runtime.status = "success"
             self._emit_run_updated(context, event_handler)
             return
 
-        for runtime in runtimes:
-            self._start_job(context, stage_runtime, runtime, event_handler)
+        parallel_limit = max_parallel or len(runtimes)
+        parallel_limit = max(1, min(parallel_limit, len(runtimes)))
+        pending: deque[JobRuntime] = deque(runtimes)
+        active: list[JobRuntime] = []
+        has_failure = False
 
+        def start_available_jobs() -> None:
+            if stop_event.is_set():
+                return
+            while pending and len(active) < parallel_limit:
+                runtime = pending.popleft()
+                self._start_job(context, stage_runtime, runtime, event_handler)
+                active.append(runtime)
+
+        start_available_jobs()
         try:
-            while True:
-                running_count = 0
-                for runtime in runtimes:
+            while active or pending:
+                completed: list[JobRuntime] = []
+                for runtime in list(active):
                     if runtime.status != "running" or not runtime.process:
+                        completed.append(runtime)
                         continue
 
                     if stop_event.is_set():
@@ -313,7 +335,6 @@ class TaskRuntimeExecutor:
                     self._tick_watchdog(context, stage_runtime, runtime, event_handler)
                     code = runtime.process.poll()
                     if code is None:
-                        running_count += 1
                         continue
 
                     runtime.exit_code = code
@@ -338,24 +359,39 @@ class TaskRuntimeExecutor:
                                 level="error",
                                 event_handler=event_handler,
                             )
+                    if runtime.status == "failed":
+                        has_failure = True
+                    completed.append(runtime)
+
+                for runtime in completed:
+                    if runtime in active:
+                        active.remove(runtime)
+                    self._close_runtime_handles(runtime)
 
                 if stop_event.is_set():
                     self._terminate_running_jobs([stage_runtime])
                     stage_runtime.status = "stopped"
+                    for pending_runtime in pending:
+                        if pending_runtime.status == "waiting":
+                            pending_runtime.status = "skipped"
+                    pending.clear()
                     self._emit_run_updated(context, event_handler)
                     break
 
-                if running_count == 0:
+                if has_failure and stage_runtime.stage.abort_on_failure:
+                    for pending_runtime in pending:
+                        if pending_runtime.status == "waiting":
+                            pending_runtime.status = "skipped"
+                    pending.clear()
+
+                start_available_jobs()
+                if not active and not pending:
                     break
                 self._emit_run_updated(context, event_handler)
                 time.sleep(self.refresh_seconds)
         finally:
-            for runtime in runtimes:
-                if runtime.reader_thread:
-                    runtime.reader_thread.join(timeout=2)
-                if runtime.log_fp:
-                    runtime.log_fp.close()
-                    runtime.log_fp = None
+            for runtime in active:
+                self._close_runtime_handles(runtime)
 
         if stage_runtime.status != "stopped":
             stage_runtime.status = (
@@ -365,6 +401,15 @@ class TaskRuntimeExecutor:
                 else ("success" if stage_runtime.stage.concurrent else "running")
             )
         self._emit_run_updated(context, event_handler)
+
+    @staticmethod
+    def _close_runtime_handles(runtime: JobRuntime) -> None:
+        if runtime.reader_thread:
+            runtime.reader_thread.join(timeout=2)
+            runtime.reader_thread = None
+        if runtime.log_fp:
+            runtime.log_fp.close()
+            runtime.log_fp = None
 
     def _start_job(
         self,
