@@ -8,8 +8,6 @@ import httpx
 from playwright.sync_api import (
     BrowserContext,
     Error as PlaywrightError,
-    Page,
-    TimeoutError as PlaywrightTimeoutError,
     sync_playwright,
 )
 
@@ -21,6 +19,14 @@ _PLATFORM_LABELS = {
     "bili": "Bilibili",
     "wb": "Weibo",
 }
+
+
+class BrowsermintUserActionRequired(RuntimeError):
+    """Raised when the remote session exists but still needs user intervention."""
+
+
+class BrowsermintProbeFailed(RuntimeError):
+    """Raised when the remote session exists but probe execution itself is inconclusive."""
 
 
 @dataclass(slots=True)
@@ -58,14 +64,6 @@ def _cookies_to_map(cookies: list[dict[str, Any]]) -> dict[str, str]:
     }
 
 
-def _cookies_to_header(cookies: list[dict[str, Any]]) -> str:
-    return "; ".join(
-        f"{cookie['name']}={cookie['value']}"
-        for cookie in cookies
-        if cookie.get("name")
-    )
-
-
 def _resolve_target_platforms(params: Mapping[str, Any]) -> list[str]:
     raw_platforms = params.get("platforms")
     if isinstance(raw_platforms, list):
@@ -74,164 +72,217 @@ def _resolve_target_platforms(params: Mapping[str, Any]) -> list[str]:
     return [single_platform] if single_platform else []
 
 
-def _ensure_page_closed(page: Page | None) -> None:
-    if page is None:
-        return
-    try:
-        page.close()
-    except PlaywrightError:
-        pass
-
-
 def _xhs_has_login_cookies(context: BrowserContext) -> bool:
     cookies = _cookies_to_map(context.cookies(urls=["https://www.xiaohongshu.com/"]))
     return bool(cookies.get("web_session") and cookies.get("a1"))
+
+
+def _douyin_has_login_cookies(context: BrowserContext) -> bool:
+    cookies = _cookies_to_map(context.cookies(urls=["https://www.douyin.com/"]))
+    return str(cookies.get("LOGIN_STATUS") or "").strip() == "1"
+
+
+def _weibo_has_login_cookies(context: BrowserContext) -> bool:
+    cookies = _cookies_to_map(context.cookies(urls=["https://m.weibo.cn/"]))
+    return bool(cookies.get("SSOLoginState") or cookies.get("WBPSESS"))
 
 
 def _brief_playwright_error(exc: Exception) -> str:
     return str(exc).splitlines()[0].strip() or exc.__class__.__name__
 
 
+def _context_get_json(
+    context: BrowserContext,
+    *,
+    platform_label: str,
+    url: str,
+    headers: Mapping[str, str] | None = None,
+    timeout_ms: int = 15_000,
+) -> tuple[dict[str, Any], int, str]:
+    try:
+        response = context.request.get(
+            url,
+            headers=dict(headers or {}),
+            timeout=timeout_ms,
+            fail_on_status_code=False,
+        )
+    except PlaywrightError as exc:
+        raise BrowsermintProbeFailed(
+            f"{platform_label} 预检探测失败: {_brief_playwright_error(exc)}"
+        ) from exc
+
+    status = int(response.status)
+    body_snippet = ""
+    try:
+        payload = response.json()
+    except Exception:
+        try:
+            body_snippet = response.text().strip()[:240]
+        except Exception:
+            body_snippet = ""
+        details = [f"status={status}"]
+        if body_snippet:
+            details.append(f"body={body_snippet}")
+        raise BrowsermintProbeFailed(
+            f"{platform_label} 预检探测失败: {', '.join(details)}."
+        ) from None
+
+    try:
+        body_snippet = response.text().strip()[:240]
+    except Exception:
+        body_snippet = ""
+    payload = payload if isinstance(payload, dict) else {}
+    return payload, status, body_snippet
+
+
 def _probe_xhs_login(context: BrowserContext) -> tuple[bool, str]:
-    # Prefer cookie check first to avoid rejecting valid sessions because of transient page-load timeouts.
     if _xhs_has_login_cookies(context):
         return True, ""
-
-    page: Page | None = None
-    try:
-        page = context.new_page()
-        try:
-            page.goto("https://www.xiaohongshu.com/", wait_until="commit", timeout=15_000)
-            page.wait_for_timeout(1_000)
-        except PlaywrightTimeoutError:
-            if _xhs_has_login_cookies(context):
-                return True, ""
-            return False, "访问 Xiaohongshu 首页超时，请在 Browsermint 会话里先打开并确认页面可访问。"
-        except PlaywrightError as exc:
-            if _xhs_has_login_cookies(context):
-                return True, ""
-            return False, f"打开 Xiaohongshu 失败: {_brief_playwright_error(exc)}"
-
-        try:
-            if page.is_visible("a[href*='/user/profile/']", timeout=1_500):
-                return True, ""
-        except PlaywrightError:
-            pass
-        if _xhs_has_login_cookies(context):
-            return True, ""
-        return False, "未检测到 Xiaohongshu 已登录态。"
-    finally:
-        _ensure_page_closed(page)
+    return False, "未检测到 Xiaohongshu 登录 Cookie（缺少 web_session / a1）。"
 
 
 def _probe_douyin_login(context: BrowserContext) -> tuple[bool, str]:
-    page: Page | None = None
+    if not _douyin_has_login_cookies(context):
+        return False, "未检测到 Douyin 登录 Cookie（缺少 LOGIN_STATUS=1）。"
+
     try:
-        page = context.new_page()
-        try:
-            page.goto("https://www.douyin.com/", wait_until="domcontentloaded", timeout=30_000)
-        except PlaywrightError as exc:
-            cookies = _cookies_to_map(context.cookies(urls=["https://www.douyin.com/"]))
-            if cookies.get("LOGIN_STATUS") == "1":
-                return True, ""
-            return False, f"打开 Douyin 失败: {_brief_playwright_error(exc)}"
-        page.wait_for_timeout(1_500)
-        try:
-            local_storage = page.evaluate("() => ({ ...window.localStorage })") or {}
-        except PlaywrightError:
-            local_storage = {}
-        cookies = _cookies_to_map(context.cookies(urls=["https://www.douyin.com/"]))
-        if str(local_storage.get("HasUserLogin", "")) == "1" or cookies.get("LOGIN_STATUS") == "1":
-            return True, ""
-        return False, "未检测到 Douyin 已登录态。"
-    finally:
-        _ensure_page_closed(page)
+        payload, _, _ = _context_get_json(
+            context,
+            platform_label="Douyin",
+            url="https://www.douyin.com/aweme/v1/web/user/profile/self/?aid=6383&device_platform=webapp",
+            headers={
+                "Accept": "application/json, text/plain, */*",
+                "Origin": "https://www.douyin.com",
+                "Referer": "https://www.douyin.com/",
+            },
+        )
+    except BrowsermintProbeFailed:
+        # Cookie indicates logged-in and lightweight probe is inconclusive.
+        return True, ""
+
+    status_code = payload.get("status_code")
+    status_msg = str(payload.get("status_msg") or payload.get("message") or "").strip()
+    if status_code == 0:
+        return True, ""
+    if status_code == 8 or "未登录" in status_msg or "会话过期" in status_msg:
+        details: list[str] = []
+        if status_code not in (None, ""):
+            details.append(f"code={status_code}")
+        if status_msg:
+            details.append(f"message={status_msg}")
+        suffix = f"（{', '.join(details)}）" if details else ""
+        return False, f"Douyin 账号接口返回未登录{suffix}。"
+
+    payload_data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    description = str(payload_data.get("description") or "").strip()
+    error_code = payload_data.get("error_code")
+    if error_code == 1 or "未登录" in description or "会话过期" in description:
+        details = []
+        if error_code not in (None, ""):
+            details.append(f"error_code={error_code}")
+        if description:
+            details.append(f"message={description}")
+        suffix = f"（{', '.join(details)}）" if details else ""
+        return False, f"Douyin 账号接口返回未登录{suffix}。"
+
+    return True, ""
+
+
+def _bilibili_has_login_cookies(context: BrowserContext) -> bool:
+    cookies = _cookies_to_map(context.cookies(urls=["https://www.bilibili.com/"]))
+    return bool(cookies.get("SESSDATA") or cookies.get("DedeUserID"))
 
 
 def _probe_bilibili_login(context: BrowserContext) -> tuple[bool, str]:
-    page: Page | None = None
-    try:
-        page = context.new_page()
-        try:
-            page.goto("https://www.bilibili.com/", wait_until="domcontentloaded", timeout=30_000)
-        except PlaywrightError as exc:
-            return False, f"打开 Bilibili 失败: {_brief_playwright_error(exc)}"
-        page.wait_for_timeout(1_200)
-        user_agent = str(page.evaluate("() => navigator.userAgent"))
-        cookies = context.cookies(urls=["https://www.bilibili.com/"])
-        cookie_header = _cookies_to_header(cookies)
-        if not cookie_header:
-            return False, "未检测到 Bilibili 登录 Cookie。"
-        response = httpx.get(
-            "https://api.bilibili.com/x/web-interface/nav",
-            headers={
-                "User-Agent": user_agent,
-                "Cookie": cookie_header,
-                "Origin": "https://www.bilibili.com",
-                "Referer": "https://www.bilibili.com",
-            },
-            timeout=15.0,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if payload.get("code") == 0 and bool(payload.get("data", {}).get("isLogin")):
-            return True, ""
-        return False, "Bilibili 导航接口返回未登录。"
-    except httpx.HTTPError as exc:
-        return False, f"Bilibili 登录探测请求失败: {exc.__class__.__name__}"
-    finally:
-        _ensure_page_closed(page)
+    if not _bilibili_has_login_cookies(context):
+        return False, "未检测到 Bilibili 登录 Cookie（缺少 SESSDATA / DedeUserID）。"
+
+    payload, status, body_snippet = _context_get_json(
+        context,
+        platform_label="Bilibili",
+        url="https://api.bilibili.com/x/web-interface/nav",
+        headers={
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://www.bilibili.com",
+            "Referer": "https://www.bilibili.com/",
+        },
+    )
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    if payload.get("code") == 0 and bool(data.get("isLogin")):
+        return True, ""
+
+    code = payload.get("code")
+    message = str(payload.get("message") or payload.get("msg") or "").strip()
+    is_login = data.get("isLogin")
+    explicit_login_failure = (
+        code == -101
+        or (code == 0 and is_login is False)
+        or (is_login is False and "未登录" in message)
+    )
+    if explicit_login_failure:
+        details: list[str] = []
+        if code not in (None, ""):
+            details.append(f"code={code}")
+        if message:
+            details.append(f"message={message}")
+        suffix = f"（{', '.join(details)}）" if details else ""
+        return False, f"Bilibili 账号接口确认未登录（Cookie 可能已失效，请在 BrowserMint 会话中重新登录）{suffix}。"
+
+    details = [f"status={status}"]
+    if code not in (None, ""):
+        details.append(f"code={code}")
+    if message:
+        details.append(f"message={message}")
+    if is_login is False:
+        details.append("isLogin=false")
+    elif body_snippet:
+        details.append(f"body={body_snippet}")
+    raise BrowsermintProbeFailed(f"Bilibili 预检探测失败: {', '.join(details)}.")
 
 
 def _probe_weibo_login(context: BrowserContext) -> tuple[bool, str]:
-    page: Page | None = None
+    if not _weibo_has_login_cookies(context):
+        return False, "未检测到 Weibo 登录 Cookie（缺少 SSOLoginState / WBPSESS）。"
+
     try:
-        page = context.new_page()
-        try:
-            page.goto("https://m.weibo.cn/", wait_until="domcontentloaded", timeout=30_000)
-        except PlaywrightError as exc:
-            return False, f"打开 Weibo 失败: {_brief_playwright_error(exc)}"
-        page.wait_for_timeout(1_200)
-        user_agent = str(page.evaluate("() => navigator.userAgent"))
-        cookies = context.cookies(urls=["https://m.weibo.cn/"])
-        cookie_header = _cookies_to_header(cookies)
-        if not cookie_header:
-            return False, "未检测到 Weibo 登录 Cookie。"
-        response = httpx.get(
-            "https://m.weibo.cn/api/config",
+        payload, _, _ = _context_get_json(
+            context,
+            platform_label="Weibo",
+            url="https://m.weibo.cn/api/config",
             headers={
-                "User-Agent": user_agent,
-                "Cookie": cookie_header,
+                "Accept": "application/json, text/plain, */*",
                 "Origin": "https://m.weibo.cn",
-                "Referer": "https://m.weibo.cn",
+                "Referer": "https://m.weibo.cn/",
             },
-            timeout=15.0,
         )
-        response.raise_for_status()
-        payload = response.json()
-        if payload.get("ok") == 1 and bool(payload.get("data", {}).get("login")):
-            return True, ""
+    except BrowsermintProbeFailed:
+        # Cookie indicates logged-in and lightweight probe is inconclusive.
+        return True, ""
+
+    payload_data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    if payload.get("ok") == 1 and bool(payload_data.get("login")):
+        return True, ""
+    if payload.get("ok") == 1 and payload_data.get("login") is False:
         return False, "Weibo 配置接口返回未登录。"
-    except httpx.HTTPError as exc:
-        return False, f"Weibo 登录探测请求失败: {exc.__class__.__name__}"
-    finally:
-        _ensure_page_closed(page)
+    return True, ""
 
 
 def probe_browsermint_login(
     connection: BrowsermintSessionConnection,
     normalized_params: Mapping[str, Any],
-) -> None:
+) -> dict[str, Any]:
     target_platforms = _resolve_target_platforms(normalized_params)
+    if not target_platforms:
+        return {"skipped_platforms": []}
+
     unsupported_platforms = [
         platform for platform in target_platforms if platform not in _SUPPORTED_LOGIN_PROBE_PLATFORMS
     ]
-    if unsupported_platforms:
-        labels = ", ".join(_PLATFORM_LABELS.get(platform, platform) for platform in unsupported_platforms)
-        raise RuntimeError(f"Browsermint 登录预检暂不支持这些平台: {labels}")
-
-    if not target_platforms:
-        return
+    probe_platforms = [
+        platform for platform in target_platforms if platform in _SUPPORTED_LOGIN_PROBE_PLATFORMS
+    ]
+    if not probe_platforms:
+        return {"skipped_platforms": unsupported_platforms}
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.connect_over_cdp(connection.cdp_ws_url, timeout=30_000)
@@ -243,7 +294,7 @@ def probe_browsermint_login(
             context = browser.new_context(viewport={"width": 1440, "height": 960})
 
         try:
-            for platform in target_platforms:
+            for platform in probe_platforms:
                 if platform == "xhs":
                     ok, reason = _probe_xhs_login(context)
                 elif platform == "dy":
@@ -254,7 +305,7 @@ def probe_browsermint_login(
                     ok, reason = _probe_weibo_login(context)
                 if not ok:
                     label = _PLATFORM_LABELS.get(platform, platform)
-                    raise RuntimeError(
+                    raise BrowsermintUserActionRequired(
                         f"Browsermint 会话未登录 {label}，已中止启动。原因: {reason}"
                     )
         finally:
@@ -264,6 +315,7 @@ def probe_browsermint_login(
                 except PlaywrightError:
                     pass
             browser.close()
+    return {"skipped_platforms": unsupported_platforms}
 
 
 class BrowsermintIntegrationClient:

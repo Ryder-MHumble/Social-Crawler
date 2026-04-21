@@ -7,12 +7,69 @@ import time
 from collections import deque
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from tasks.common.models import TaskSpec
 from tasks.common.runtime import TaskRuntimeExecutor, generate_run_id
 
 from .task_center_store import TaskCenterFileStore
+
+
+def _build_initial_progress(task: TaskSpec) -> dict[str, Any]:
+    stages_payload: list[dict[str, Any]] = []
+    total_jobs = 0
+    for stage in task.stages:
+        slices: list[dict[str, Any]] = []
+        for job in stage.jobs:
+            total_jobs += 1
+            slices.append(
+                {
+                    "job_key": job.key,
+                    "job_name": job.name,
+                    "status": "waiting",
+                    "platform": job.metadata.get("platform"),
+                    "platform_label": job.metadata.get("platform_label"),
+                    "crawl_type": job.metadata.get("crawl_type"),
+                    "slice_kind": job.metadata.get("slice_kind"),
+                    "slice_label": job.metadata.get("slice_label"),
+                    "values": list(job.metadata.get("values") or []),
+                    "group_index": job.metadata.get("group_index"),
+                    "group_total": job.metadata.get("group_total"),
+                }
+            )
+        stages_payload.append(
+            {
+                "stage_key": stage.key,
+                "stage_name": stage.name,
+                "status": "waiting",
+                "total_jobs": len(stage.jobs),
+                "completed_jobs": 0,
+                "running_jobs": 0,
+                "waiting_jobs": len(stage.jobs),
+                "failed_jobs": 0,
+                "degraded_jobs": 0,
+                "stopped_jobs": 0,
+                "skipped_jobs": 0,
+                "max_parallel": stage.max_parallel,
+                "concurrent": stage.concurrent,
+                "slices": slices,
+            }
+        )
+    return {
+        "summary": {
+            "total_jobs": total_jobs,
+            "completed_jobs": 0,
+            "running_jobs": 0,
+            "waiting_jobs": total_jobs,
+            "failed_jobs": 0,
+            "degraded_jobs": 0,
+            "stopped_jobs": 0,
+            "skipped_jobs": 0,
+        },
+        "current": None,
+        "stages": stages_payload,
+        "preflight_steps": deepcopy(task.metadata.get("effective_plan", {}).get("preflight_steps") or []),
+    }
 
 
 def _build_initial_snapshot(
@@ -21,13 +78,23 @@ def _build_initial_snapshot(
     task: TaskSpec,
     normalized_params: dict[str, Any],
     preset_id: str | None,
+    initial_status: str,
 ) -> dict[str, Any]:
     started_at = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+    effective_save_option = str(
+        task.metadata.get("effective_save_option")
+        or normalized_params.get("save_option")
+        or ""
+    )
+    runtime_storage_backend = str(
+        task.metadata.get("runtime_storage_backend")
+        or effective_save_option
+    )
     return {
         "id": run_id,
         "task_slug": task.slug,
         "title": task.title,
-        "status": "running",
+        "status": initial_status,
         "preset_id": preset_id,
         "normalized_params": normalized_params,
         "started_at": started_at,
@@ -39,6 +106,38 @@ def _build_initial_snapshot(
             "deduped": 0,
             "errors": 0,
             "stalled_jobs": 0,
+            "candidate_count": 0,
+            "detail_requests": 0,
+            "detail_successes": 0,
+            "detail_failures": 0,
+            "watchdog_stalls": 0,
+            "job_failures": 0,
+            "user_stops": 0,
+            "degraded_jobs": 0,
+        },
+        "lifecycle": {
+            "phase": initial_status,
+            "label": "Queued" if initial_status == "queued" else "Running",
+            "detail": "",
+            "updated_at": started_at,
+            "current_stage_key": None,
+            "current_stage_name": None,
+            "stage_index": 0,
+            "stage_total": len(task.stages),
+            "preflight_steps": deepcopy(task.metadata.get("effective_plan", {}).get("preflight_steps") or []),
+        },
+        "progress": _build_initial_progress(task),
+        "warnings": deepcopy(task.metadata.get("warnings") or []),
+        "effective_plan": deepcopy(task.metadata.get("effective_plan") or {}),
+        "effective_save_option": effective_save_option,
+        "runtime_storage_backend": runtime_storage_backend,
+        "issues": [],
+        "breakdowns": {
+            "status_counts": {},
+            "filter_reasons": [],
+            "platform_status_counts": [],
+            "entity_status_counts": [],
+            "source_keyword_counts": [],
         },
         "stages": [
             {
@@ -67,6 +166,7 @@ def _build_initial_snapshot(
                         "termination_reason": None,
                         "started_at": None,
                         "finished_at": None,
+                        "metadata": dict(job.metadata or {}),
                     }
                     for job in stage.jobs
                 ],
@@ -96,6 +196,8 @@ class TaskRunManager:
         *,
         normalized_params: dict[str, Any],
         preset_id: str | None = None,
+        setup_hook: Callable[[Any, Any, Any, Any], None] | None = None,
+        initial_status: str = "running",
     ) -> dict[str, Any]:
         with self._lock:
             if self._active_thread and self._active_thread.is_alive():
@@ -107,6 +209,7 @@ class TaskRunManager:
                 task=task,
                 normalized_params=normalized_params,
                 preset_id=preset_id,
+                initial_status=initial_status,
             )
             stop_event = threading.Event()
             self._active_run_id = run_id
@@ -118,7 +221,7 @@ class TaskRunManager:
 
             thread = threading.Thread(
                 target=self._run_worker,
-                args=(run_id, task, normalized_params, preset_id, stop_event),
+                args=(run_id, task, normalized_params, preset_id, stop_event, setup_hook),
                 daemon=True,
             )
             self._active_thread = thread
@@ -180,6 +283,35 @@ class TaskRunManager:
         with self._lock:
             return [deepcopy(event) for event in self._events if event["event_id"] > event_id]
 
+    def get_latest_event_id(self) -> int:
+        with self._lock:
+            return max(0, self._next_event_id - 1)
+
+    def append_system_log(self, run_id: str, *, message: str, level: str = "info") -> None:
+        with self._lock:
+            snapshot = deepcopy(self._active_snapshot) if self._active_run_id == run_id else None
+            if not snapshot:
+                snapshot = deepcopy(self.store.get_run(run_id))
+        if not snapshot:
+            return
+        stages = snapshot.get("stages") or []
+        stage = stages[0] if stages else {"key": "__system__", "name": "Run Lifecycle"}
+        entry = {
+            "id": len(self._run_logs.setdefault(run_id, [])) + 1,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
+            "level": level,
+            "message": message,
+            "stage_key": stage.get("key"),
+            "stage_name": stage.get("name"),
+            "job_key": "__system__",
+            "job_name": "Run Lifecycle",
+        }
+        with self._lock:
+            logs = self._run_logs.setdefault(run_id, [])
+            entry["id"] = len(logs) + 1
+            logs.append(entry)
+            self._record_event({"type": "log", "run_id": run_id, "entry": deepcopy(entry)})
+
     def _run_worker(
         self,
         run_id: str,
@@ -187,6 +319,7 @@ class TaskRunManager:
         normalized_params: dict[str, Any],
         preset_id: str | None,
         stop_event: threading.Event,
+        setup_hook: Callable[[Any, Any, Any, Any], None] | None,
     ) -> None:
         try:
             self.executor.execute(
@@ -196,6 +329,7 @@ class TaskRunManager:
                 run_id=run_id,
                 stop_event=stop_event,
                 event_handler=self._handle_runtime_event,
+                setup_hook=setup_hook,
             )
         finally:
             with self._lock:

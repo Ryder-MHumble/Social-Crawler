@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import warnings
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -139,6 +140,31 @@ FALLBACK_GUOZHI_RISK_SUFFIXES = [
     "黑幕",
     "争议",
 ]
+
+
+def _default_official_account_targets() -> list[str]:
+    configured = getattr(config, "XHS_OFFICIAL_ACCOUNTS", []) or []
+    targets: list[str] = []
+    seen: set[str] = set()
+    for item in configured:
+        if not isinstance(item, Mapping):
+            continue
+        candidate = str(
+            item.get("profile_url")
+            or item.get("url")
+            or item.get("user_id")
+            or item.get("name")
+            or ""
+        ).strip()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        targets.append(candidate)
+    return targets
+
+
+DEFAULT_OFFICIAL_ACCOUNT_TARGETS = _default_official_account_targets()
+
 FALLBACK_TASK_CONFIG = {
     "default_inputs": {
         "platforms": ["xhs"],
@@ -168,6 +194,8 @@ FALLBACK_TASK_CONFIG = {
         "specified_account_ids": [],
         "account_whitelist": [],
         "account_blacklist": [],
+        "enable_official_accounts_crawl": False,
+        "official_account_targets": DEFAULT_OFFICIAL_ACCOUNT_TARGETS,
         "login_type": getattr(config, "LOGIN_TYPE", "qrcode"),
         "cookies": getattr(config, "COOKIES", ""),
         "save_option": "json",
@@ -256,7 +284,9 @@ def _normalize_cookie_text(value: Any, fallback: str = "") -> str:
     return str(value).strip()
 
 
-def _normalize_keyword_text(value: Any, fallback: str) -> str:
+def _normalize_keyword_text(value: Any, fallback: str, *, allow_empty: bool = False) -> str:
+    if allow_empty and value is not None and not _sanitize_string_list(value):
+        return ""
     keywords = _sanitize_string_list(value)
     if not keywords:
         keywords = _sanitize_string_list(fallback)
@@ -265,6 +295,22 @@ def _normalize_keyword_text(value: Any, fallback: str) -> str:
 
 def _csv_text(value: Any) -> str:
     return ",".join(_sanitize_string_list(value))
+
+
+def _runtime_storage_backend_for(save_option: str) -> str:
+    if save_option in {"json", "csv", "excel"}:
+        return f"file:{save_option}"
+    return save_option
+
+
+def _warning(*, code: str, message: str, level: str = "warning", **extra: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "code": code,
+        "level": level,
+        "message": message,
+    }
+    payload.update(extra)
+    return payload
 
 
 def _summarize_job_values(values: Sequence[str], limit: int = 24) -> str:
@@ -452,6 +498,17 @@ def _normalize_external_task_config(raw: Mapping[str, Any]) -> dict[str, Any]:
         )
         if isinstance(default_inputs_raw, Mapping)
         else [],
+        "enable_official_accounts_crawl": _coerce_bool(
+            default_inputs_raw.get("enable_official_accounts_crawl"),
+            bool(fallback_defaults["enable_official_accounts_crawl"]),
+        )
+        if isinstance(default_inputs_raw, Mapping)
+        else bool(fallback_defaults["enable_official_accounts_crawl"]),
+        "official_account_targets": _sanitize_string_list(
+            default_inputs_raw.get("official_account_targets"),
+        )
+        if isinstance(default_inputs_raw, Mapping)
+        else list(fallback_defaults["official_account_targets"]),
         "login_type": _normalize_login_type(
             default_inputs_raw.get("login_type"),
             str(fallback_defaults["login_type"]),
@@ -542,6 +599,13 @@ def _normalize_external_task_config(raw: Mapping[str, Any]) -> dict[str, Any]:
                     ),
                     "account_whitelist": _sanitize_string_list(raw_preset.get("account_whitelist")),
                     "account_blacklist": _sanitize_string_list(raw_preset.get("account_blacklist")),
+                    "enable_official_accounts_crawl": _coerce_bool(
+                        raw_preset.get("enable_official_accounts_crawl"),
+                        False,
+                    ),
+                    "official_account_targets": _sanitize_string_list(
+                        raw_preset.get("official_account_targets")
+                    ),
                     "save_option": _normalize_save_option(
                         raw_preset.get("save_option"),
                         str(fallback_defaults["save_option"]),
@@ -692,6 +756,14 @@ def _load_task_config() -> dict[str, Any]:
         or list(account_defaults["whitelist"]),
         "account_blacklist": _sanitize_string_list(loaded_defaults.get("account_blacklist"))
         or list(account_defaults["blacklist"]),
+        "enable_official_accounts_crawl": _coerce_bool(
+            loaded_defaults.get("enable_official_accounts_crawl"),
+            bool(fallback_defaults["enable_official_accounts_crawl"]),
+        ),
+        "official_account_targets": _sanitize_string_list(
+            loaded_defaults.get("official_account_targets")
+        )
+        or list(fallback_defaults["official_account_targets"]),
         "login_type": _normalize_login_type(
             loaded_defaults.get("login_type"),
             str(fallback_defaults["login_type"]),
@@ -773,6 +845,8 @@ UI_DEFAULT_PARAMS = {
     "specified_account_ids": _csv_text(DEFAULT_INPUTS["specified_account_ids"]),
     "account_whitelist": _csv_text(DEFAULT_INPUTS["account_whitelist"]),
     "account_blacklist": _csv_text(DEFAULT_INPUTS["account_blacklist"]),
+    "enable_official_accounts_crawl": bool(DEFAULT_INPUTS["enable_official_accounts_crawl"]),
+    "official_account_targets": _csv_text(DEFAULT_INPUTS["official_account_targets"]),
     "creator_job_mode": DEFAULT_CREATOR_JOB_MODE,
     "creator_job_chunk_size": DEFAULT_CREATOR_JOB_CHUNK_SIZE,
     "creator_job_max_parallel": DEFAULT_CREATOR_MAX_PARALLEL,
@@ -851,6 +925,8 @@ def _build_seed_params(
         "specified_account_ids": "",
         "account_whitelist": "",
         "account_blacklist": "",
+        "enable_official_accounts_crawl": False,
+        "official_account_targets": "",
         "creator_job_mode": UI_DEFAULT_PARAMS["creator_job_mode"],
         "creator_job_chunk_size": UI_DEFAULT_PARAMS["creator_job_chunk_size"],
         "creator_job_max_parallel": UI_DEFAULT_PARAMS["creator_job_max_parallel"],
@@ -1171,6 +1247,23 @@ def get_template() -> TaskTemplate:
                 visible_when={"enable_account_crawl": True},
             ),
             TaskField(
+                key="enable_official_accounts_crawl",
+                component="switch",
+                label="启用官方号抓取",
+                default=UI_DEFAULT_PARAMS["enable_official_accounts_crawl"],
+                group="账号定向",
+                helper_text="仅在任务显式开启时执行，避免全局配置偷偷插入官方号阶段。",
+            ),
+            TaskField(
+                key="official_account_targets",
+                component="textarea",
+                label="官方号目标",
+                default=UI_DEFAULT_PARAMS["official_account_targets"],
+                description="多个 profile_url / user_id 用英文逗号分隔。XHS 建议优先填 profile_url。",
+                group="账号定向",
+                visible_when={"enable_official_accounts_crawl": True},
+            ),
+            TaskField(
                 key="creator_job_mode",
                 component="select",
                 label="账号任务拆分",
@@ -1271,22 +1364,30 @@ def normalize_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]:
         raw.get("max_comments_count_singlenotes", raw.get("top_comments_count")),
         UI_DEFAULT_PARAMS["max_comments_count_singlenotes"],
     )
-    keywords = _normalize_keyword_text(raw.get("keywords"), UI_DEFAULT_PARAMS["keywords"])
+    keywords = _normalize_keyword_text(
+        raw.get("keywords"),
+        UI_DEFAULT_PARAMS["keywords"],
+        allow_empty="keywords" in raw,
+    )
     keyword_whitelist = _normalize_keyword_text(
         raw.get("keyword_whitelist"),
         UI_DEFAULT_PARAMS["keyword_whitelist"],
+        allow_empty="keyword_whitelist" in raw,
     )
     keyword_blacklist = _normalize_keyword_text(
         raw.get("keyword_blacklist"),
         UI_DEFAULT_PARAMS["keyword_blacklist"],
+        allow_empty="keyword_blacklist" in raw,
     )
     relevance_must_contain = _normalize_keyword_text(
         raw.get("relevance_must_contain"),
         UI_DEFAULT_PARAMS["relevance_must_contain"],
+        allow_empty="relevance_must_contain" in raw,
     )
     relevance_exclude_keywords = _normalize_keyword_text(
         raw.get("relevance_exclude_keywords"),
         UI_DEFAULT_PARAMS["relevance_exclude_keywords"],
+        allow_empty="relevance_exclude_keywords" in raw,
     )
     resolved_keywords = _resolve_keywords_with_rules(
         keywords,
@@ -1296,19 +1397,27 @@ def normalize_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]:
     specified_account_ids = _normalize_keyword_text(
         raw.get("specified_account_ids", raw.get("creator_ids")),
         UI_DEFAULT_PARAMS["specified_account_ids"],
+        allow_empty="specified_account_ids" in raw or "creator_ids" in raw,
     )
     account_whitelist = _normalize_keyword_text(
         raw.get("account_whitelist"),
         UI_DEFAULT_PARAMS["account_whitelist"],
+        allow_empty="account_whitelist" in raw,
     )
     account_blacklist = _normalize_keyword_text(
         raw.get("account_blacklist"),
         UI_DEFAULT_PARAMS["account_blacklist"],
+        allow_empty="account_blacklist" in raw,
     )
     resolved_account_ids = _resolve_account_ids(
         specified_account_ids,
         whitelist=account_whitelist,
         blacklist=account_blacklist,
+    )
+    official_account_targets = _normalize_keyword_text(
+        raw.get("official_account_targets"),
+        UI_DEFAULT_PARAMS["official_account_targets"],
+        allow_empty="official_account_targets" in raw,
     )
     enable_keyword_search = _coerce_bool(
         raw.get("enable_keyword_search"),
@@ -1317,6 +1426,10 @@ def normalize_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]:
     enable_account_crawl = _coerce_bool(
         raw.get("enable_account_crawl"),
         UI_DEFAULT_PARAMS["enable_account_crawl"] or bool(resolved_account_ids),
+    )
+    enable_official_accounts_crawl = _coerce_bool(
+        raw.get("enable_official_accounts_crawl"),
+        UI_DEFAULT_PARAMS["enable_official_accounts_crawl"],
     )
     keyword_job_mode = normalize_split_mode(
         raw.get("keyword_job_mode"),
@@ -1361,6 +1474,8 @@ def normalize_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]:
         "creator_ids": _csv_text(resolved_account_ids),
         "account_whitelist": _csv_text(account_whitelist),
         "account_blacklist": _csv_text(account_blacklist),
+        "enable_official_accounts_crawl": enable_official_accounts_crawl,
+        "official_account_targets": _csv_text(official_account_targets),
         "creator_job_mode": creator_job_mode,
         "creator_job_chunk_size": normalize_chunk_size(
             raw.get("creator_job_chunk_size"),
@@ -1381,7 +1496,6 @@ def normalize_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]:
         params["login_type"] = "qrcode"
         params["cookies"] = ""
         params["headless"] = False
-        params["save_option"] = "sqlite"
     if params["login_type"] == "qrcode":
         # QR login requires a visible browser window for manual scan/verification.
         params["headless"] = False
@@ -1395,7 +1509,15 @@ def normalize_params(raw_params: Mapping[str, Any] | None) -> dict[str, Any]:
         raise ValueError("Keywords cannot be empty when keyword search is enabled.")
     if params["enable_account_crawl"] and not params["specified_account_ids"]:
         raise ValueError("specified_account_ids cannot be empty when account crawl is enabled.")
-    if not params["enable_keyword_search"] and not params["enable_account_crawl"]:
+    if params["enable_official_accounts_crawl"] and not params["official_account_targets"]:
+        raise ValueError(
+            "official_account_targets cannot be empty when official account crawl is enabled."
+        )
+    if (
+        not params["enable_keyword_search"]
+        and not params["enable_account_crawl"]
+        and not params["enable_official_accounts_crawl"]
+    ):
         raise ValueError("At least one crawl stage must be enabled.")
     return params
 
@@ -1475,6 +1597,14 @@ def _resolve_runtime_params(params: Mapping[str, Any] | None) -> dict[str, Any]:
                 "SENTIMENT_ACCOUNT_BLACKLIST",
                 UI_DEFAULT_PARAMS["account_blacklist"],
             ),
+            "enable_official_accounts_crawl": os.getenv(
+                "SENTIMENT_ENABLE_OFFICIAL_ACCOUNTS_CRAWL",
+                "true" if UI_DEFAULT_PARAMS["enable_official_accounts_crawl"] else "false",
+            ),
+            "official_account_targets": os.getenv(
+                "SENTIMENT_OFFICIAL_ACCOUNT_TARGETS",
+                UI_DEFAULT_PARAMS["official_account_targets"],
+            ),
             "creator_job_mode": os.getenv(
                 "SENTIMENT_CREATOR_JOB_MODE",
                 UI_DEFAULT_PARAMS["creator_job_mode"],
@@ -1508,6 +1638,9 @@ def build_task(
     normalized = _resolve_runtime_params(params)
     login_type = str(normalized["login_type"])
     cookie_input = _normalize_cookie_text(normalized.get("cookies"), "")
+    browser_provider = str(normalized["browser_provider"])
+    browsermint_single_session_safe = browser_provider == "browsermint"
+    runtime_storage_backend = _runtime_storage_backend_for(str(normalized["save_option"]))
     platform_cookie_map: dict[str, str] = {}
     if login_type == "cookie":
         if cookie_input:
@@ -1528,6 +1661,62 @@ def build_task(
                 )
 
     stages: list[TaskStage] = []
+    plan_warnings: list[dict[str, Any]] = []
+    effective_plan_stages: list[dict[str, Any]] = []
+
+    if browsermint_single_session_safe and not normalized["browser_session_id"]:
+        plan_warnings.append(
+            _warning(
+                code="waiting_user",
+                message="尚未选择 BrowserMint 会话，任务启动时会停在预检阶段并等待用户处理。",
+                level="warning",
+            )
+        )
+
+    def build_common_job_env(*, enable_official_accounts: bool) -> dict[str, str]:
+        return {
+            "ENABLE_RELEVANCE_FILTER": "true" if normalized["enable_relevance_filter"] else "false",
+            "RELEVANCE_MUST_CONTAIN": normalized["relevance_must_contain"],
+            "RELEVANCE_EXCLUDE_KEYWORDS": normalized["relevance_exclude_keywords"],
+            "ENABLE_OFFICIAL_ACCOUNTS_CRAWL": "true" if enable_official_accounts else "false",
+            "SOCIAL_CRAWLER_EFFECTIVE_SAVE_OPTION": str(normalized["save_option"]),
+            "SOCIAL_CRAWLER_RUNTIME_STORAGE_BACKEND": runtime_storage_backend,
+        }
+
+    def maybe_record_parallelism_warning(
+        *,
+        stage_key: str,
+        stage_name: str,
+        requested_job_mode: str,
+        effective_job_mode: str,
+        requested_stage_max_parallel: int,
+        effective_stage_max_parallel: int,
+        requested_job_count: int,
+        effective_job_count: int,
+    ) -> None:
+        if not browsermint_single_session_safe:
+            return
+        if (
+            requested_job_mode == effective_job_mode
+            and requested_stage_max_parallel == effective_stage_max_parallel
+            and requested_job_count == effective_job_count
+        ):
+            return
+        plan_warnings.append(
+            _warning(
+                code="degraded_parallelism",
+                level="warning",
+                message=(
+                    f"{stage_name} 已切换为 BrowserMint 单会话安全模式："
+                    f"job_mode {requested_job_mode} -> {effective_job_mode}，"
+                    f"并发 {requested_stage_max_parallel} -> {effective_stage_max_parallel}。"
+                ),
+                stage_key=stage_key,
+                issue_group="browsermint_session_contention",
+                resource_mode="browsermint_single_session_safe",
+            )
+        )
+
     for crawl_type, stage_key, stage_name, stage_value_key, flag in (
         (
             "search",
@@ -1548,30 +1737,63 @@ def build_task(
         stage_value = normalized[stage_value_key]
         if not enabled or not stage_value:
             continue
+
+        requested_values = _sanitize_string_list(stage_value)
+        requested_job_mode = (
+            normalized["keyword_job_mode"]
+            if crawl_type == "search"
+            else normalized["creator_job_mode"]
+        )
+        requested_chunk_size = (
+            normalized["keyword_job_chunk_size"]
+            if crawl_type == "search"
+            else normalized["creator_job_chunk_size"]
+        )
+        requested_parallel = (
+            normalized["keyword_job_max_parallel"]
+            if crawl_type == "search"
+            else normalized["creator_job_max_parallel"]
+        )
+        requested_job_slices, requested_stage_max_parallel = plan_platform_value_jobs(
+            normalized["platforms"],
+            requested_values,
+            split_mode=requested_job_mode,
+            chunk_size=requested_chunk_size,
+            max_parallel=requested_parallel,
+        )
+        effective_job_mode = "bundle" if browsermint_single_session_safe else requested_job_mode
+        effective_chunk_size = (
+            max(1, len(requested_values))
+            if browsermint_single_session_safe
+            else requested_chunk_size
+        )
         job_slices, stage_max_parallel = plan_platform_value_jobs(
             normalized["platforms"],
-            _sanitize_string_list(stage_value),
-            split_mode=(
-                normalized["keyword_job_mode"]
-                if crawl_type == "search"
-                else normalized["creator_job_mode"]
-            ),
-            chunk_size=(
-                normalized["keyword_job_chunk_size"]
-                if crawl_type == "search"
-                else normalized["creator_job_chunk_size"]
-            ),
-            max_parallel=(
-                normalized["keyword_job_max_parallel"]
-                if crawl_type == "search"
-                else normalized["creator_job_max_parallel"]
-            ),
+            requested_values,
+            split_mode=effective_job_mode,
+            chunk_size=effective_chunk_size,
+            max_parallel=1 if browsermint_single_session_safe else requested_parallel,
         )
+        requested_stage_max_parallel = int(requested_stage_max_parallel or 0)
+        stage_max_parallel = int(stage_max_parallel or 0)
+        if browsermint_single_session_safe and job_slices:
+            stage_max_parallel = 1
+        maybe_record_parallelism_warning(
+            stage_key=stage_key,
+            stage_name=stage_name,
+            requested_job_mode=requested_job_mode,
+            effective_job_mode=effective_job_mode,
+            requested_stage_max_parallel=requested_stage_max_parallel,
+            effective_stage_max_parallel=stage_max_parallel,
+            requested_job_count=len(requested_job_slices),
+            effective_job_count=len(job_slices),
+        )
+
         jobs: list[TaskJob] = []
+        slice_kind = "keywords" if crawl_type == "search" else "accounts"
         for job_slice in job_slices:
             platform = job_slice.platform
             cookie = platform_cookie_map.get(platform, "")
-            runtime_login_type = login_type
             slice_value = job_slice.csv_value
             job_label = _summarize_job_values(job_slice.values)
             suffix = (
@@ -1585,7 +1807,7 @@ def build_task(
                 "--platform",
                 platform,
                 "--lt",
-                runtime_login_type,
+                login_type,
                 "--type",
                 crawl_type,
                 flag,
@@ -1605,11 +1827,6 @@ def build_task(
             ]
             if cookie:
                 command.extend(["--cookies", cookie])
-            job_env = {
-                "ENABLE_RELEVANCE_FILTER": "true" if normalized["enable_relevance_filter"] else "false",
-                "RELEVANCE_MUST_CONTAIN": normalized["relevance_must_contain"],
-                "RELEVANCE_EXCLUDE_KEYWORDS": normalized["relevance_exclude_keywords"],
-            }
             jobs.append(
                 TaskJob(
                     key=(
@@ -1620,7 +1837,27 @@ def build_task(
                     name=f"{PLATFORM_LABELS.get(platform, platform)} {crawl_type} crawl{suffix}",
                     command=command,
                     cwd=project_root,
-                    env=job_env,
+                    env=build_common_job_env(enable_official_accounts=False),
+                    metadata={
+                        "crawl_type": crawl_type,
+                        "platform": platform,
+                        "platform_label": PLATFORM_LABELS.get(platform, platform),
+                        "values": list(job_slice.values),
+                        "slice_kind": slice_kind,
+                        "slice_label": f"{PLATFORM_LABELS.get(platform, platform)} {slice_kind}",
+                        "group_index": job_slice.group_index,
+                        "group_total": job_slice.group_total,
+                        "value_count": len(job_slice.values),
+                        "job_mode": effective_job_mode,
+                        "requested_job_mode": requested_job_mode,
+                        "browser_provider": browser_provider,
+                        "browser_session_id": normalized["browser_session_id"],
+                        "resource_mode": (
+                            "browsermint_single_session_safe"
+                            if browsermint_single_session_safe
+                            else "default"
+                        ),
+                    },
                 )
             )
         stages.append(
@@ -1628,11 +1865,174 @@ def build_task(
                 key=stage_key,
                 name=stage_name,
                 jobs=jobs,
-                concurrent=True,
+                concurrent=not browsermint_single_session_safe,
                 max_parallel=stage_max_parallel or None,
                 abort_on_failure=False,
             )
         )
+        effective_plan_stages.append(
+            {
+                "key": stage_key,
+                "name": stage_name,
+                "crawl_type": crawl_type,
+                "requested_job_mode": requested_job_mode,
+                "effective_job_mode": effective_job_mode,
+                "requested_job_count": len(requested_job_slices),
+                "effective_job_count": len(job_slices),
+                "requested_max_parallel": requested_stage_max_parallel,
+                "effective_max_parallel": stage_max_parallel,
+                "resource_mode": (
+                    "browsermint_single_session_safe"
+                    if browsermint_single_session_safe
+                    else "default"
+                ),
+                "value_count": len(requested_values),
+                "values_preview": requested_values[:8],
+            }
+        )
+
+    official_targets = _sanitize_string_list(normalized["official_account_targets"])
+    if normalized["enable_official_accounts_crawl"]:
+        official_platforms = [platform for platform in normalized["platforms"] if platform == "xhs"]
+        ignored_platforms = [platform for platform in normalized["platforms"] if platform not in official_platforms]
+        if ignored_platforms:
+            ignored_labels = ", ".join(PLATFORM_LABELS.get(platform, platform) for platform in ignored_platforms)
+            plan_warnings.append(
+                _warning(
+                    code="official_accounts_platform_ignored",
+                    level="info",
+                    message=f"官方号抓取当前仅接入 XHS，已忽略这些平台: {ignored_labels}。",
+                )
+            )
+        if official_platforms and official_targets:
+            official_jobs: list[TaskJob] = []
+            serialized_targets = json.dumps(
+                [
+                    (
+                        {"profile_url": target}
+                        if target.startswith("http://") or target.startswith("https://")
+                        else {"user_id": target}
+                    )
+                    for target in official_targets
+                ],
+                ensure_ascii=False,
+            )
+            for platform in official_platforms:
+                cookie = platform_cookie_map.get(platform, "")
+                command = [
+                    python_executable,
+                    "main.py",
+                    "--platform",
+                    platform,
+                    "--lt",
+                    login_type,
+                    "--type",
+                    "official_accounts",
+                    "--save_data_option",
+                    normalized["save_option"],
+                    "--max_notes_count",
+                    str(normalized["max_notes_count"]),
+                    "--get_comment",
+                    "true" if normalized["enable_comments"] else "false",
+                    "--get_sub_comment",
+                    "true" if normalized["enable_sub_comments"] else "false",
+                    "--max_comments_count_singlenotes",
+                    str(normalized["max_comments_count_singlenotes"]),
+                    "--headless",
+                    "true" if normalized["headless"] else "false",
+                ]
+                if cookie:
+                    command.extend(["--cookies", cookie])
+                env = build_common_job_env(enable_official_accounts=True)
+                env.update(
+                    {
+                        "XHS_OFFICIAL_ACCOUNTS_JSON": serialized_targets,
+                        "SOCIAL_CRAWLER_XHS_OFFICIAL_ACCOUNT_TARGETS": ",".join(official_targets),
+                    }
+                )
+                official_jobs.append(
+                    TaskJob(
+                        key=f"official_accounts_{platform}",
+                        name=f"{PLATFORM_LABELS.get(platform, platform)} official account crawl",
+                        command=command,
+                        cwd=project_root,
+                        env=env,
+                        metadata={
+                            "crawl_type": "official_accounts",
+                            "platform": platform,
+                            "platform_label": PLATFORM_LABELS.get(platform, platform),
+                            "values": list(official_targets),
+                            "slice_kind": "official_accounts",
+                            "slice_label": f"{PLATFORM_LABELS.get(platform, platform)} official accounts",
+                            "group_index": 1,
+                            "group_total": 1,
+                            "value_count": len(official_targets),
+                            "job_mode": "bundle",
+                            "requested_job_mode": "bundle",
+                            "browser_provider": browser_provider,
+                            "browser_session_id": normalized["browser_session_id"],
+                            "resource_mode": (
+                                "browsermint_single_session_safe"
+                                if browsermint_single_session_safe
+                                else "default"
+                            ),
+                        },
+                    )
+                )
+            stages.append(
+                TaskStage(
+                    key="sentiment_official_account_crawl",
+                    name="Sentiment official account crawl",
+                    jobs=official_jobs,
+                    concurrent=False,
+                    max_parallel=1,
+                    abort_on_failure=False,
+                )
+            )
+            effective_plan_stages.append(
+                {
+                    "key": "sentiment_official_account_crawl",
+                    "name": "Sentiment official account crawl",
+                    "crawl_type": "official_accounts",
+                    "requested_job_mode": "bundle",
+                    "effective_job_mode": "bundle",
+                    "requested_job_count": len(official_jobs),
+                    "effective_job_count": len(official_jobs),
+                    "requested_max_parallel": 1,
+                    "effective_max_parallel": 1,
+                    "resource_mode": (
+                        "browsermint_single_session_safe"
+                        if browsermint_single_session_safe
+                        else "default"
+                    ),
+                    "value_count": len(official_targets),
+                    "values_preview": official_targets[:8],
+                }
+            )
+
+    effective_plan: dict[str, Any] = {
+        "mode": (
+            "browsermint_single_session_safe"
+            if browsermint_single_session_safe
+            else "default"
+        ),
+        "browser_provider": browser_provider,
+        "browser_session_id": normalized["browser_session_id"],
+        "requested_save_option": normalized["save_option"],
+        "effective_save_option": normalized["save_option"],
+        "runtime_storage_backend": runtime_storage_backend,
+        "stage_count": len(effective_plan_stages),
+        "stages": effective_plan_stages,
+    }
+    if browsermint_single_session_safe:
+        effective_plan["preflight_steps"] = [
+            {"key": "connect_session", "label": "连接 BrowserMint 会话", "status": "pending"},
+            {"key": "validate_login", "label": "校验登录态", "status": "pending"},
+            {"key": "verify_homepage", "label": "验证首页可访问", "status": "pending"},
+            {"key": "verify_runtime_readiness", "label": "验证轻量读取能力", "status": "pending"},
+            {"key": "generate_plan", "label": "生成有效执行计划", "status": "pending"},
+        ]
+
     return TaskSpec(
         slug="sentiment_monitor",
         title="Sentiment Monitor",
@@ -1651,14 +2051,24 @@ def build_task(
             f"Relevance exclude: {normalized['relevance_exclude_keywords'] or 'n/a'}",
             f"Creator crawl: {'enabled' if normalized['enable_account_crawl'] else 'disabled'}",
             f"Creator IDs: {normalized['specified_account_ids'] or 'n/a'}",
+            f"Official accounts: {'enabled' if normalized['enable_official_accounts_crawl'] else 'disabled'}",
+            f"Official targets: {normalized['official_account_targets'] or 'n/a'}",
             f"Platforms: {', '.join(PLATFORM_LABELS.get(p, p) for p in normalized['platforms'])}",
             f"Comments: {'enabled' if normalized['enable_comments'] else 'disabled'}",
             f"Browser: {normalized['browser_provider']} / {normalized['browser_session_id'] or 'local-session'}",
             f"Save option: {normalized['save_option']}",
+            f"Runtime storage backend: {runtime_storage_backend}",
             f"Login: {normalized['login_type']} / headless={normalized['headless']} / cookie={'set' if cookie_input else 'unset'}",
         ],
         stages=stages,
         aliases=["sentiment", "monitor"],
+        metadata={
+            "effective_plan": effective_plan,
+            "plan_warnings": plan_warnings,
+            "warnings": list(plan_warnings),
+            "effective_save_option": normalized["save_option"],
+            "runtime_storage_backend": runtime_storage_backend,
+        },
     )
 
 

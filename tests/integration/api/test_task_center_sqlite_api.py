@@ -74,6 +74,23 @@ def test_sqlite_status_init_and_query_routes(
             "snapshot_json": {"title": "OpenClaw note"},
         }
     )
+    sqlite_env.record_observation(
+        {
+            "run_id": "run_sqlite_api",
+            "task_slug": "sentiment_monitor",
+            "stage_key": "crawl",
+            "job_key": "job_xhs",
+            "entity_type": "content",
+            "platform": "xhs",
+            "external_id": "note_2",
+            "source_keyword": "openclaw",
+            "clean_status": "filtered",
+            "clean_reason": "Content failed relevance filter.",
+            "rule_key": "filtered_content",
+            "dedup_fingerprint": "xhs:note_2",
+            "snapshot_json": {"title": "Filtered note"},
+        }
+    )
 
     status_after = client_with_real_service.get("/api/storage/sqlite/status")
     assert status_after.status_code == 200
@@ -117,3 +134,9 @@ def test_sqlite_status_init_and_query_routes(
     )
     assert row_res.status_code == 200
     assert row_res.json()["external_id"] == "note_1"
+
+    breakdowns = sqlite_env.get_run_breakdowns("run_sqlite_api")
+    assert breakdowns["status_counts"]["accepted"] == 1
+    assert breakdowns["status_counts"]["filtered"] == 1
+    assert breakdowns["filter_reasons"][0]["reason"] == "Content failed relevance filter."
+    assert breakdowns["platform_status_counts"][0]["platform"] == "xhs"

@@ -91,15 +91,31 @@ const fileTypeOptions = [
   { value: "xls", label: "XLS" },
 ];
 
-const runSaveOption = computed(() =>
-  String(
-    props.selectedRun?.normalized_params.save_option ??
-      props.selectedRun?.normalized_params.save_data_option ??
-      "",
-  )
+const runSaveOption = computed(() => {
+  const params =
+    props.selectedRun?.normalized_params && typeof props.selectedRun.normalized_params === "object"
+      ? props.selectedRun.normalized_params
+      : {};
+  return String(props.selectedRun?.effective_save_option ?? params.save_option ?? params.save_data_option ?? "")
+    .trim()
+    .toLowerCase();
+});
+
+const runtimeStorageBackend = computed(() =>
+  String(props.selectedRun?.runtime_storage_backend ?? "")
     .trim()
     .toLowerCase(),
 );
+
+function runMetric(metric: "accepted" | "filtered" | "deduped"): number {
+  return Number(props.selectedRun?.metrics?.[metric] ?? 0);
+}
+
+function sqliteStatusCount(status: "accepted" | "filtered" | "deduped" | "error"): number {
+  const counts = props.stats?.observation_status_counts;
+  if (!counts || typeof counts !== "object") return 0;
+  return Number(counts[status] ?? 0);
+}
 
 const visibleFiles = computed(() => {
   const query = props.fileFilters.q.trim().toLowerCase();
@@ -141,12 +157,12 @@ const sqliteSummaryCards = computed(() => [
   },
   {
     label: "Accepted",
-    value: String(props.stats?.observation_status_counts.accepted ?? 0),
+    value: String(sqliteStatusCount("accepted")),
     note: "已进入结果集",
   },
   {
     label: "Filtered",
-    value: String(props.stats?.observation_status_counts.filtered ?? 0),
+    value: String(sqliteStatusCount("filtered")),
     note: "已被规则过滤",
   },
 ]);
@@ -218,8 +234,24 @@ function fileDownloadUrl(path: string): string {
 
 function fileResultLabel(): string {
   if (runSaveOption.value === "csv") return "CSV 文件";
-  if (runSaveOption.value === "excel") return "Excel 文件";
-  return "JSON 文件";
+  if (["excel", "xlsx", "xls"].includes(runSaveOption.value)) return "Excel 文件";
+  if (runSaveOption.value === "sqlite") return "SQLite 结果";
+  if (runSaveOption.value === "json") return "JSON 文件";
+  return "结果文件";
+}
+
+function storageBackendLabel(): string {
+  if (!runtimeStorageBackend.value) {
+    return props.mode === "files" ? "runtime/data" : props.sqlitePath || "SQLite";
+  }
+  if (["filesystem", "files", "local_files", "file"].includes(runtimeStorageBackend.value)) {
+    return "runtime/data";
+  }
+  if (runtimeStorageBackend.value === "sqlite") {
+    return props.sqlitePath || "SQLite";
+  }
+  if (runtimeStorageBackend.value === "supabase") return "Supabase";
+  return runtimeStorageBackend.value;
 }
 
 function resultDescription(): string {
@@ -274,21 +306,25 @@ function resultDescription(): string {
       <div class="run-context-metrics">
         <div class="run-context-metric">
           <span>Accepted</span>
-          <strong>{{ selectedRun.metrics.accepted }}</strong>
+          <strong>{{ runMetric("accepted") }}</strong>
         </div>
         <div class="run-context-metric">
           <span>Filtered</span>
-          <strong>{{ selectedRun.metrics.filtered }}</strong>
+          <strong>{{ runMetric("filtered") }}</strong>
         </div>
         <div class="run-context-metric">
           <span>Deduped</span>
-          <strong>{{ selectedRun.metrics.deduped }}</strong>
+          <strong>{{ runMetric("deduped") }}</strong>
         </div>
       </div>
 
       <div class="run-context-actions">
         <span class="state-chip" :class="mode === 'sqlite' && filters.run_id ? 'success' : 'neutral'">
-          {{ mode === "sqlite" ? (filters.run_id ? "已绑定当前 run" : "当前为全局结果视图") : `${fileResultLabel()} · runtime/data` }}
+          {{
+            mode === "sqlite"
+              ? (filters.run_id ? "已绑定当前 run" : "当前为全局结果视图")
+              : `${fileResultLabel()} · ${storageBackendLabel()}`
+          }}
         </span>
         <button class="btn ghost small" @click="emit('focus-execution')">查看运行监控</button>
         <button

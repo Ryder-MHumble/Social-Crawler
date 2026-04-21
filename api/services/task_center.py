@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from dataclasses import asdict
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -11,7 +12,14 @@ from tasks.common.template import PresetSeed, TaskDefinition, TaskField, TaskFie
 from tasks.runner.registry import load_task_definitions
 from tools import runtime_paths
 
-from .browsermint_integration import BrowsermintIntegrationClient, probe_browsermint_login
+from tasks.common.runtime import RunSetupError
+
+from .browsermint_integration import (
+    BrowsermintIntegrationClient,
+    BrowsermintProbeFailed,
+    BrowsermintUserActionRequired,
+    probe_browsermint_login,
+)
 from .task_center_store import TaskCenterFileStore
 from .task_run_manager import TaskRunManager
 
@@ -82,12 +90,32 @@ def _serialize_task_spec(task_spec) -> dict[str, Any]:
                         "cwd": str(job.cwd),
                         "command": list(job.command),
                         "display_command": subprocess.list2cmdline(job.command),
+                        "metadata": dict(job.metadata or {}),
                     }
                     for job in stage.jobs
                 ],
             }
             for stage in task_spec.stages
         ],
+    }
+
+
+def _task_runtime_metadata(task_spec, normalized_params: dict[str, Any]) -> dict[str, Any]:
+    effective_save_option = str(
+        task_spec.metadata.get("effective_save_option")
+        or normalized_params.get("save_option")
+        or ""
+    )
+    runtime_storage_backend = str(
+        task_spec.metadata.get("runtime_storage_backend")
+        or effective_save_option
+    )
+    return {
+        "effective_plan": dict(task_spec.metadata.get("effective_plan") or {}),
+        "plan_warnings": [dict(item) for item in task_spec.metadata.get("plan_warnings") or []],
+        "warnings": [dict(item) for item in task_spec.metadata.get("warnings") or []],
+        "effective_save_option": effective_save_option,
+        "runtime_storage_backend": runtime_storage_backend,
     }
 
 
@@ -138,10 +166,15 @@ class TaskCenterService:
             self.python_executable,
             normalized,
         )
+        runtime_meta = _task_runtime_metadata(task_spec, normalized)
         return {
             "task": _serialize_template(definition),
             "normalized_params": normalized,
             "spec": _serialize_task_spec(task_spec),
+            "effective_plan": runtime_meta["effective_plan"],
+            "plan_warnings": runtime_meta["plan_warnings"],
+            "effective_save_option": runtime_meta["effective_save_option"],
+            "runtime_storage_backend": runtime_meta["runtime_storage_backend"],
         }
 
     def list_presets(self, task_slug: str | None = None) -> list[dict[str, Any]]:
@@ -245,11 +278,12 @@ class TaskCenterService:
             self.python_executable,
             normalized,
         )
-        self._prepare_browser_provider(task_spec, normalized)
         return self.run_manager.start_run(
             task_spec,
             normalized_params=normalized,
             preset_id=preset_id,
+            setup_hook=self._build_run_setup_hook(task_spec, normalized),
+            initial_status="queued",
         )
 
     def stop_active_run(self) -> dict[str, Any] | None:
@@ -272,6 +306,9 @@ class TaskCenterService:
 
     def get_events_since(self, event_id: int) -> list[dict[str, Any]]:
         return self.run_manager.get_events_since(event_id)
+
+    def get_latest_event_id(self) -> int:
+        return self.run_manager.get_latest_event_id()
 
     def _merge_and_normalize(
         self,
@@ -314,25 +351,103 @@ class TaskCenterService:
             raise KeyError(f"Task not found: {slug}")
         return definition
 
-    def _prepare_browser_provider(self, task_spec, normalized_params: dict[str, Any]) -> None:
+    def _build_run_setup_hook(self, task_spec, normalized_params: dict[str, Any]):
         browser_provider = str(normalized_params.get("browser_provider") or "local").strip().lower()
         if browser_provider != "browsermint":
-            return
+            return None
 
-        connection = self.browsermint_client.connect_session(
-            str(normalized_params.get("browser_session_id") or "")
-        )
-        probe_browsermint_login(connection, normalized_params)
-
-        for stage in task_spec.stages:
-            for job in stage.jobs:
-                job.env.update(
-                    {
-                        "CDP_REMOTE_WS_URL": connection.cdp_ws_url,
-                        "SOCIAL_CRAWLER_BROWSER_PROVIDER": "browsermint",
-                        "SOCIAL_CRAWLER_BROWSER_SESSION_ID": connection.session_id,
-                    }
+        def setup_hook(context, event_handler, emit_log, emit_update) -> None:
+            def mark_step(step_key: str, *, detail: str) -> None:
+                steps = context.lifecycle.setdefault(
+                    "preflight_steps",
+                    deepcopy(task_spec.metadata.get("effective_plan", {}).get("preflight_steps") or []),
                 )
+                for step in steps:
+                    current_key = str(step.get("key") or "")
+                    if current_key == step_key:
+                        step["status"] = "running"
+                    elif str(step.get("status") or "") != "completed":
+                        step["status"] = "pending"
+                context.lifecycle["detail"] = detail
+                context.lifecycle["updated_at"] = datetime.now().isoformat()
+                emit_update()
+
+            def complete_step(step_key: str, *, detail: str) -> None:
+                steps = context.lifecycle.setdefault(
+                    "preflight_steps",
+                    deepcopy(task_spec.metadata.get("effective_plan", {}).get("preflight_steps") or []),
+                )
+                for step in steps:
+                    if str(step.get("key") or "") == step_key:
+                        step["status"] = "completed"
+                context.lifecycle["detail"] = detail
+                context.lifecycle["updated_at"] = datetime.now().isoformat()
+                emit_update()
+
+            session_id = str(normalized_params.get("browser_session_id") or "").strip()
+            mark_step("connect_session", detail="正在连接 BrowserMint 会话。")
+            emit_log(f"Connecting Browsermint session {session_id or '<missing>'}.", "info")
+            try:
+                connection = self.browsermint_client.connect_session(session_id)
+            except Exception as exc:
+                raise RunSetupError(str(exc), status="waiting_user", level="warning") from exc
+            complete_step(
+                "connect_session",
+                detail=f"BrowserMint 会话已连接：{connection.name or connection.session_id}。",
+            )
+
+            mark_step("validate_login", detail="正在校验目标平台登录态。")
+            emit_log(
+                (
+                    f"Browsermint session connected: {connection.name or connection.session_id} "
+                    f"({connection.status}). Validating login state."
+                ),
+                "info",
+            )
+            try:
+                probe_result = probe_browsermint_login(connection, normalized_params)
+            except BrowsermintUserActionRequired as exc:
+                raise RunSetupError(str(exc), status="waiting_user", level="warning") from exc
+            except BrowsermintProbeFailed as exc:
+                raise RunSetupError(str(exc), status="failed", level="error") from exc
+            except Exception as exc:
+                raise RunSetupError(str(exc), status="failed", level="error") from exc
+            skipped_platforms = (
+                probe_result.get("skipped_platforms")
+                if isinstance(probe_result, dict)
+                else []
+            )
+            if isinstance(skipped_platforms, list) and skipped_platforms:
+                labels = ", ".join(str(item) for item in skipped_platforms if str(item).strip())
+                if labels:
+                    emit_log(
+                        f"Browsermint 登录预检已跳过未支持平台: {labels}。",
+                        "warning",
+                    )
+            complete_step("validate_login", detail="登录态校验通过。")
+            complete_step("verify_homepage", detail="首页可访问检查通过。")
+            complete_step("verify_runtime_readiness", detail="轻量读取能力检查通过。")
+
+            mark_step("generate_plan", detail="正在注入远端会话参数并生成有效执行计划。")
+            for stage in task_spec.stages:
+                for job in stage.jobs:
+                    job.env.update(
+                        {
+                            "CDP_REMOTE_WS_URL": connection.cdp_ws_url,
+                            "SOCIAL_CRAWLER_BROWSER_PROVIDER": "browsermint",
+                            "SOCIAL_CRAWLER_BROWSER_SESSION_ID": connection.session_id,
+                        }
+                    )
+            complete_step("generate_plan", detail="有效执行计划已生成，准备启动任务。")
+            emit_log(
+                (
+                    f"Browsermint preflight passed for {len(task_spec.stages)} stage(s); "
+                    "task execution is starting."
+                ),
+                "info",
+            )
+
+        return setup_hook
 
     def _get_preset_or_raise(self, preset_id: str) -> dict[str, Any]:
         for preset in self.store.load_presets():

@@ -137,7 +137,28 @@ def test_watchdog_marks_non_zero_exit_without_timeout(sqlite_env, tmp_path: Path
     assert job.status == "failed"
     assert job.exit_code == 3
     assert job.watchdog_status == "completed"
-    assert job.termination_reason == ""
+    assert job.termination_reason == "boom"
+
+
+def test_runtime_marks_zero_exit_with_all_detail_failures_as_degraded(
+    sqlite_env,
+    tmp_path: Path,
+) -> None:
+    context, job = _run_task(
+        tmp_path,
+        [
+            sys.executable,
+            "-u",
+            "-c",
+            "print('Note details: [None, None, None]')",
+        ],
+    )
+
+    assert context.status == "degraded"
+    assert job.status == "degraded"
+    assert job.exit_code == 0
+    assert job.watchdog_status == "completed"
+    assert "0/3 succeeded" in job.termination_reason
 
 
 def test_runtime_honors_stage_max_parallel(sqlite_env, tmp_path: Path) -> None:

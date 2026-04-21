@@ -18,10 +18,11 @@
 # 使用本代码即表示您同意遵守上述原则和LICENSE中的所有条款。
 
 import asyncio
+import json
 import os
 import random
 from asyncio import Task
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from playwright.async_api import (
     BrowserContext,
@@ -56,10 +57,232 @@ class XiaoHongShuCrawler(AbstractCrawler):
 
     def __init__(self) -> None:
         self.index_url = "https://www.xiaohongshu.com"
-        # self.user_agent = utils.get_user_agent()
-        self.user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        self.user_agent: Optional[str] = None
         self.cdp_manager = None
         self.ip_proxy_pool = None  # Proxy IP pool for automatic proxy refresh
+
+    async def _new_context_page(self) -> Page:
+        if self.cdp_manager:
+            return await self.cdp_manager.new_page()
+        return await self.browser_context.new_page()
+
+    @staticmethod
+    def _unwrap_exception_message(exc: BaseException) -> str:
+        root: BaseException = exc
+        seen: set[int] = set()
+        while id(root) not in seen:
+            seen.add(id(root))
+            nested = getattr(root, "__cause__", None) or getattr(root, "__context__", None)
+            if not nested:
+                break
+            root = nested
+        message = str(root).strip() or root.__class__.__name__
+        return f"{root.__class__.__name__}: {message}"
+
+    @classmethod
+    def _describe_retry_error(cls, retry_error: RetryError) -> str:
+        last_attempt = getattr(retry_error, "last_attempt", None)
+        attempt_number = getattr(last_attempt, "attempt_number", None)
+        prefix = (
+            f"retry exhausted after {attempt_number} attempts"
+            if attempt_number
+            else "retry exhausted"
+        )
+        if last_attempt is not None:
+            try:
+                if last_attempt.failed:
+                    exception = last_attempt.exception()
+                    if exception:
+                        return f"{prefix}: {cls._unwrap_exception_message(exception)}"
+            except Exception:
+                pass
+            try:
+                result = last_attempt.result()
+                return f"{prefix}: last result={result!r}"
+            except Exception:
+                pass
+        return f"{prefix}: {cls._unwrap_exception_message(retry_error)}"
+
+    @staticmethod
+    def _normalize_note_candidate(
+        post_item: Dict[str, Any],
+        default_xsec_source: str = "pc_search",
+    ) -> Optional[Dict[str, str]]:
+        if not isinstance(post_item, dict):
+            return None
+        note_card = post_item.get("note_card")
+        if not isinstance(note_card, dict):
+            note_card = {}
+        note_id = str(
+            post_item.get("note_id")
+            or post_item.get("id")
+            or note_card.get("note_id")
+            or note_card.get("id")
+            or ""
+        ).strip()
+        if not note_id:
+            return None
+        return {
+            "note_id": note_id,
+            "xsec_token": str(post_item.get("xsec_token") or note_card.get("xsec_token") or "").strip(),
+            "xsec_source": str(
+                post_item.get("xsec_source")
+                or note_card.get("xsec_source")
+                or default_xsec_source
+            ).strip()
+            or default_xsec_source,
+        }
+
+    @staticmethod
+    def _format_accept_language(languages: List[str]) -> str:
+        if not languages:
+            return "zh-CN,zh;q=0.9"
+        normalized: List[str] = []
+        seen: set[str] = set()
+        for language in languages:
+            candidate = str(language or "").strip()
+            key = candidate.lower()
+            if not candidate or key in seen:
+                continue
+            seen.add(key)
+            normalized.append(candidate)
+        if not normalized:
+            return "zh-CN,zh;q=0.9"
+        values: List[str] = []
+        for index, language in enumerate(normalized[:4]):
+            if index == 0:
+                values.append(language)
+            else:
+                quality = max(0.1, 1.0 - (index * 0.1))
+                values.append(f"{language};q={quality:.1f}")
+        return ",".join(values)
+
+    @staticmethod
+    def _format_sec_ch_ua(brands: List[Dict[str, Any]]) -> str:
+        formatted_brands: List[str] = []
+        for brand in brands:
+            if not isinstance(brand, dict):
+                continue
+            name = str(brand.get("brand") or "").strip()
+            version = str(brand.get("version") or "").strip()
+            if not name or not version:
+                continue
+            formatted_brands.append(f'"{name}";v="{version}"')
+        return ", ".join(formatted_brands)
+
+    async def _get_live_browser_profile(self) -> Dict[str, Any]:
+        profile = await self.context_page.evaluate(
+            """() => {
+                const uaData = navigator.userAgentData || null;
+                return {
+                    userAgent: navigator.userAgent || "",
+                    language: navigator.language || "",
+                    languages: Array.isArray(navigator.languages) ? navigator.languages : [],
+                    platform: uaData?.platform || navigator.platform || "",
+                    mobile: typeof uaData?.mobile === "boolean" ? uaData.mobile : /Mobile/i.test(navigator.userAgent || ""),
+                    brands: Array.isArray(uaData?.brands) ? uaData.brands : [],
+                };
+            }"""
+        )
+        if not isinstance(profile, dict):
+            return {}
+        return profile
+
+    async def _build_live_headers(self, cookie_str: str) -> Dict[str, str]:
+        profile = await self._get_live_browser_profile()
+        languages = profile.get("languages")
+        if not isinstance(languages, list):
+            languages = []
+        primary_language = str(profile.get("language") or "").strip()
+        if primary_language:
+            languages = [primary_language, *languages]
+        headers = {
+            "accept": "application/json, text/plain, */*",
+            "accept-language": self._format_accept_language(languages),
+            "cache-control": "no-cache",
+            "content-type": "application/json;charset=UTF-8",
+            "origin": self.index_url,
+            "pragma": "no-cache",
+            "priority": "u=1, i",
+            "referer": f"{self.index_url}/",
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-site",
+            "user-agent": str(profile.get("userAgent") or "").strip() or os.getenv("USER_AGENT", ""),
+            "Cookie": cookie_str,
+        }
+        sec_ch_ua = self._format_sec_ch_ua(profile.get("brands") if isinstance(profile.get("brands"), list) else [])
+        if sec_ch_ua:
+            headers["sec-ch-ua"] = sec_ch_ua
+        headers["sec-ch-ua-mobile"] = "?1" if bool(profile.get("mobile")) else "?0"
+        platform = str(profile.get("platform") or "").strip()
+        if platform:
+            headers["sec-ch-ua-platform"] = json.dumps(platform)
+        return headers
+
+    @staticmethod
+    def _should_crawl_official_accounts() -> bool:
+        if config.CRAWLER_TYPE == "official_accounts":
+            return True
+        return config.CRAWLER_TYPE == "search" and bool(
+            getattr(config, "ENABLE_OFFICIAL_ACCOUNTS_CRAWL", False)
+        )
+
+    def _resolve_official_account_targets(self) -> List[Dict[str, str]]:
+        resolved_accounts: List[Dict[str, str]] = []
+        accounts = getattr(config, "XHS_OFFICIAL_ACCOUNTS", [])
+        if not isinstance(accounts, list):
+            return resolved_accounts
+
+        for account in accounts:
+            raw_account = account if isinstance(account, dict) else {"user_id": account}
+            if not isinstance(raw_account, dict):
+                continue
+            identifier = str(
+                raw_account.get("profile_url")
+                or raw_account.get("url")
+                or raw_account.get("creator_url")
+                or raw_account.get("user_id")
+                or raw_account.get("creator_id")
+                or ""
+            ).strip()
+            if not identifier:
+                utils.logger.warning(
+                    "[XiaoHongShuCrawler.crawl_official_accounts] Skip official account target without identifier"
+                )
+                continue
+            try:
+                creator_info = parse_creator_info_from_url(identifier)
+            except ValueError as exc:
+                utils.logger.warning(
+                    "[XiaoHongShuCrawler.crawl_official_accounts] "
+                    f"Skip invalid official account target {identifier}: {exc}"
+                )
+                continue
+
+            user_id = creator_info.user_id
+            xsec_token = str(
+                raw_account.get("xsec_token")
+                or raw_account.get("token")
+                or creator_info.xsec_token
+                or ""
+            ).strip()
+            xsec_source = str(
+                raw_account.get("xsec_source")
+                or raw_account.get("source")
+                or creator_info.xsec_source
+                or "pc_feed"
+            ).strip() or "pc_feed"
+            name = str(raw_account.get("name") or raw_account.get("nickname") or user_id).strip() or user_id
+            resolved_accounts.append(
+                {
+                    "user_id": user_id,
+                    "name": name,
+                    "xsec_token": xsec_token,
+                    "xsec_source": xsec_source,
+                }
+            )
+        return resolved_accounts
 
     async def start(self) -> None:
         playwright_proxy_format, httpx_proxy_format = None, None
@@ -93,7 +316,7 @@ class XiaoHongShuCrawler(AbstractCrawler):
                     path=str(runtime_paths.get_repo_path("libs", "stealth.min.js"))
                 )
 
-            self.context_page = await self.browser_context.new_page()
+            self.context_page = await self._new_context_page()
             await self.context_page.goto(self.index_url)
 
             # Create a client to interact with the Xiaohongshu website.
@@ -124,8 +347,7 @@ class XiaoHongShuCrawler(AbstractCrawler):
             else:
                 pass
 
-            # Official accounts: run when enabled or when type is official_accounts
-            if getattr(config, "ENABLE_OFFICIAL_ACCOUNTS_CRAWL", False) or config.CRAWLER_TYPE == "official_accounts":
+            if self._should_crawl_official_accounts():
                 await self.crawl_official_accounts()
 
             utils.logger.info("[XiaoHongShuCrawler.start] Xhs Crawler finished ...")
@@ -162,14 +384,23 @@ class XiaoHongShuCrawler(AbstractCrawler):
                     if not notes_res or not notes_res.get("has_more", False):
                         utils.logger.info("[XiaoHongShuCrawler.search] No more content!")
                         break
+                    normalized_candidates = [
+                        candidate
+                        for post_item in notes_res.get("items", [])
+                        if post_item.get("model_type") not in ("rec_query", "hot_query")
+                        for candidate in [self._normalize_note_candidate(post_item, default_xsec_source="pc_search")]
+                        if candidate
+                    ]
                     semaphore = asyncio.Semaphore(config.MAX_CONCURRENCY_NUM)
                     task_list = [
                         self.get_note_detail_async_task(
-                            note_id=post_item.get("id"),
-                            xsec_source=post_item.get("xsec_source"),
-                            xsec_token=post_item.get("xsec_token"),
+                            note_id=note_candidate["note_id"],
+                            xsec_source=note_candidate["xsec_source"],
+                            xsec_token=note_candidate["xsec_token"],
                             semaphore=semaphore,
-                        ) for post_item in notes_res.get("items", {}) if post_item.get("model_type") not in ("rec_query", "hot_query")
+                            default_xsec_source="pc_search",
+                        )
+                        for note_candidate in normalized_candidates
                     ]
                     note_details = await asyncio.gather(*task_list)
                     for note_detail in note_details:
@@ -198,12 +429,13 @@ class XiaoHongShuCrawler(AbstractCrawler):
                 creator_info: CreatorUrlInfo = parse_creator_info_from_url(creator_url)
                 utils.logger.info(f"[XiaoHongShuCrawler.get_creators_and_notes] Parse creator URL info: {creator_info}")
                 user_id = creator_info.user_id
+                creator_xsec_source = creator_info.xsec_source or "pc_feed"
 
                 # get creator detail info from web html content
                 createor_info: Dict = await self.xhs_client.get_creator_info(
                     user_id=user_id,
                     xsec_token=creator_info.xsec_token,
-                    xsec_source=creator_info.xsec_source
+                    xsec_source=creator_xsec_source,
                 )
                 if createor_info:
                     await xhs_store.save_creator(user_id, creator=createor_info)
@@ -219,7 +451,7 @@ class XiaoHongShuCrawler(AbstractCrawler):
                 crawl_interval=crawl_interval,
                 callback=self.fetch_creator_notes_detail,
                 xsec_token=creator_info.xsec_token,
-                xsec_source=creator_info.xsec_source,
+                xsec_source=creator_xsec_source,
             )
 
             note_ids = []
@@ -235,7 +467,7 @@ class XiaoHongShuCrawler(AbstractCrawler):
         source_keyword is set to "@{account_name}" so the data can be
         distinguished from keyword-search results in the database.
         """
-        accounts = getattr(config, "XHS_OFFICIAL_ACCOUNTS", [])
+        accounts = self._resolve_official_account_targets()
         if not accounts:
             return
 
@@ -243,6 +475,8 @@ class XiaoHongShuCrawler(AbstractCrawler):
         for account in accounts:
             user_id = account.get("user_id", "")
             name = account.get("name", user_id)
+            xsec_token = account.get("xsec_token", "")
+            xsec_source = account.get("xsec_source", "pc_feed")
             if not user_id:
                 continue
 
@@ -257,11 +491,13 @@ class XiaoHongShuCrawler(AbstractCrawler):
                     user_id=user_id,
                     crawl_interval=float(config.CRAWLER_MAX_SLEEP_SEC),
                     callback=self.fetch_creator_notes_detail,
+                    xsec_token=xsec_token,
+                    xsec_source=xsec_source,
                 )
             except RetryError as ex:
                 utils.logger.warning(
                     f"[XiaoHongShuCrawler.crawl_official_accounts] Failed to crawl @{name} ({user_id}), "
-                    f"skip this account: {ex}"
+                    f"skip this account: {self._describe_retry_error(ex)}"
                 )
                 continue
             except Exception as ex:
@@ -280,14 +516,22 @@ class XiaoHongShuCrawler(AbstractCrawler):
 
     async def fetch_creator_notes_detail(self, note_list: List[Dict]):
         """Concurrently obtain the specified post list and save the data"""
+        normalized_candidates = [
+            candidate
+            for post_item in note_list
+            for candidate in [self._normalize_note_candidate(post_item, default_xsec_source="pc_feed")]
+            if candidate
+        ]
         semaphore = asyncio.Semaphore(config.MAX_CONCURRENCY_NUM)
         task_list = [
             self.get_note_detail_async_task(
-                note_id=post_item.get("note_id"),
-                xsec_source=post_item.get("xsec_source"),
-                xsec_token=post_item.get("xsec_token"),
+                note_id=note_candidate["note_id"],
+                xsec_source=note_candidate["xsec_source"],
+                xsec_token=note_candidate["xsec_token"],
                 semaphore=semaphore,
-            ) for post_item in note_list
+                default_xsec_source="pc_feed",
+            )
+            for note_candidate in normalized_candidates
         ]
 
         note_details = await asyncio.gather(*task_list)
@@ -310,6 +554,7 @@ class XiaoHongShuCrawler(AbstractCrawler):
                 xsec_source=note_url_info.xsec_source,
                 xsec_token=note_url_info.xsec_token,
                 semaphore=asyncio.Semaphore(config.MAX_CONCURRENCY_NUM),
+                default_xsec_source="pc_search",
             )
             get_note_detail_task_list.append(crawler_task)
 
@@ -330,6 +575,7 @@ class XiaoHongShuCrawler(AbstractCrawler):
         xsec_source: str,
         xsec_token: str,
         semaphore: asyncio.Semaphore,
+        default_xsec_source: str = "pc_search",
     ) -> Optional[Dict]:
         """Get note detail
 
@@ -342,22 +588,62 @@ class XiaoHongShuCrawler(AbstractCrawler):
         Returns:
             Dict: note detail
         """
+        note_id = str(note_id or "").strip()
+        xsec_source = str(xsec_source or "").strip() or default_xsec_source
+        xsec_token = str(xsec_token or "").strip()
         note_detail = None
         utils.logger.info(f"[get_note_detail_async_task] Begin get note detail, note_id: {note_id}")
+        if not note_id:
+            utils.logger.warning("[get_note_detail_async_task] Skip note detail fetch because note_id is empty")
+            return None
         async with semaphore:
             try:
+                retry_details: List[str] = []
                 try:
                     note_detail = await self.xhs_client.get_note_by_id(note_id, xsec_source, xsec_token)
-                except RetryError:
-                    pass
+                except RetryError as ex:
+                    retry_detail = f"API detail {self._describe_retry_error(ex)}"
+                    retry_details.append(retry_detail)
+                    utils.logger.warning(
+                        f"[get_note_detail_async_task] API detail retry exhausted for note_id:{note_id}, {retry_detail}. "
+                        "Falling back to browser-backed extraction."
+                    )
 
                 if not note_detail:
-                    note_detail = await self.xhs_client.get_note_by_id_from_html(note_id, xsec_source, xsec_token,
-                                                                                 enable_cookie=True)
-                    if not note_detail:
+                    try:
+                        note_detail = await self.xhs_client.get_note_by_id_from_browser(
+                            note_id,
+                            xsec_source,
+                            xsec_token,
+                        )
+                    except RetryError as ex:
+                        retry_detail = f"browser detail {self._describe_retry_error(ex)}"
+                        retry_details.append(retry_detail)
                         utils.logger.warning(
-                            f"[get_note_detail_async_task] Failed to get note detail after API and HTML fallback, "
-                            f"skip note_id: {note_id}"
+                            f"[get_note_detail_async_task] Browser-backed detail retry exhausted for note_id:{note_id}, "
+                            f"{retry_detail}. Falling back to raw HTML."
+                        )
+
+                if not note_detail:
+                    try:
+                        note_detail = await self.xhs_client.get_note_by_id_from_html(
+                            note_id,
+                            xsec_source,
+                            xsec_token,
+                            enable_cookie=True,
+                        )
+                    except RetryError as ex:
+                        retry_detail = f"HTML detail {self._describe_retry_error(ex)}"
+                        retry_details.append(retry_detail)
+                        utils.logger.warning(
+                            f"[get_note_detail_async_task] Raw HTML detail retry exhausted for note_id:{note_id}, "
+                            f"{retry_detail}."
+                        )
+                    if not note_detail:
+                        details_suffix = f" Details: {'; '.join(retry_details)}" if retry_details else ""
+                        utils.logger.warning(
+                            "[get_note_detail_async_task] Failed to get note detail after API and HTML fallback "
+                            f"(browser-backed extraction also failed), skip note_id: {note_id}.{details_suffix}"
                         )
                         return None
 
@@ -423,28 +709,13 @@ class XiaoHongShuCrawler(AbstractCrawler):
         """Create Xiaohongshu client"""
         utils.logger.info("[XiaoHongShuCrawler.create_xhs_client] Begin create Xiaohongshu API client ...")
         cookie_str, cookie_dict = utils.convert_cookies(await self.browser_context.cookies())
+        live_headers = await self._build_live_headers(cookie_str)
         xhs_client_obj = XiaoHongShuClient(
             proxy=httpx_proxy,
-            headers={
-                "accept": "application/json, text/plain, */*",
-                "accept-language": "zh-CN,zh;q=0.9",
-                "cache-control": "no-cache",
-                "content-type": "application/json;charset=UTF-8",
-                "origin": "https://www.xiaohongshu.com",
-                "pragma": "no-cache",
-                "priority": "u=1, i",
-                "referer": "https://www.xiaohongshu.com/",
-                "sec-ch-ua": '"Chromium";v="136", "Google Chrome";v="136", "Not.A/Brand";v="99"',
-                "sec-ch-ua-mobile": "?0",
-                "sec-ch-ua-platform": '"Windows"',
-                "sec-fetch-dest": "empty",
-                "sec-fetch-mode": "cors",
-                "sec-fetch-site": "same-site",
-                "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
-                "Cookie": cookie_str,
-            },
+            headers=live_headers,
             playwright_page=self.context_page,
             cookie_dict=cookie_dict,
+            page_factory=self._new_context_page,
             proxy_ip_pool=self.ip_proxy_pool,  # Pass proxy pool for automatic refresh
         )
         return xhs_client_obj

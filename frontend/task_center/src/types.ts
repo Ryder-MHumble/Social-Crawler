@@ -75,6 +75,7 @@ export interface TaskJob {
   cwd: string;
   command: string[];
   display_command?: string;
+  metadata?: Record<string, unknown>;
   status?: string;
   log_path?: string;
   exit_code?: number | null;
@@ -116,7 +117,71 @@ export interface TaskRunMetrics {
   deduped: number;
   errors: number;
   stalled_jobs: number;
+  candidate_count: number;
+  detail_requests: number;
+  detail_successes: number;
+  detail_failures: number;
   [key: string]: number;
+}
+
+export interface TaskRunLifecycle {
+  phase: string;
+  label: string;
+  detail: string;
+  updated_at?: string | null;
+  current_stage_key?: string | null;
+  current_stage_name?: string | null;
+  stage_index?: number;
+  stage_total?: number;
+}
+
+export interface TaskRunIssue {
+  fingerprint: string;
+  category_key: string;
+  label: string;
+  hint: string;
+  count: number;
+  level: string;
+  sample_message?: string;
+  last_message?: string;
+  first_seen_at?: string | null;
+  last_seen_at?: string | null;
+  stage_key?: string | null;
+  stage_name?: string | null;
+  job_key?: string | null;
+  job_name?: string | null;
+}
+
+export interface TaskRunPlanItem {
+  key: string;
+  label: string;
+  detail?: string;
+  status?: string | null;
+  [key: string]: unknown;
+}
+
+export interface TaskRunWarning {
+  key: string;
+  code: string;
+  label: string;
+  detail: string;
+  level: string;
+  status?: string | null;
+  [key: string]: unknown;
+}
+
+export interface TaskRunProgress {
+  [key: string]: unknown;
+}
+
+export interface TaskRunBreakdownBucket {
+  count: number;
+  reason?: string;
+  source_keyword?: string;
+  platform?: string;
+  entity_type?: string;
+  counts?: Record<string, number>;
+  total?: number;
 }
 
 export interface TaskRun {
@@ -130,6 +195,21 @@ export interface TaskRun {
   finished_at?: string | null;
   log_path?: string | null;
   metrics: TaskRunMetrics;
+  lifecycle?: TaskRunLifecycle | null;
+  issues?: TaskRunIssue[];
+  effective_plan?: TaskRunPlanItem[] | null;
+  plan_warnings?: TaskRunWarning[];
+  effective_save_option?: string | null;
+  runtime_storage_backend?: string | null;
+  progress?: TaskRunProgress | null;
+  warnings?: TaskRunWarning[];
+  breakdowns?: {
+    status_counts?: Record<string, number>;
+    filter_reasons?: TaskRunBreakdownBucket[];
+    platform_status_counts?: TaskRunBreakdownBucket[];
+    entity_status_counts?: TaskRunBreakdownBucket[];
+    source_keyword_counts?: TaskRunBreakdownBucket[];
+  } | null;
   stages: TaskStage[];
 }
 

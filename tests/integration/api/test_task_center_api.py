@@ -3,12 +3,15 @@ from __future__ import annotations
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 from api.main import app
+import api.services.task_center as task_center_module
 from api.services.task_center import TaskCenterService, get_task_center_service
+from api.services.browsermint_integration import BrowsermintProbeFailed, BrowsermintUserActionRequired
 from tasks.common.models import TaskJob, TaskSpec, TaskStage
 from tasks.common.template import PresetSeed, TaskDefinition, TaskField, TaskTemplate
 
@@ -47,7 +50,18 @@ def _build_dummy_definition() -> TaskDefinition:
         value = float(raw.get("sleep_seconds", 1.0))
         if value <= 0:
             raise ValueError("sleep_seconds must be positive")
-        return {"sleep_seconds": value}
+        raw_platforms = raw.get("platforms")
+        if isinstance(raw_platforms, list):
+            platforms = [str(item).strip() for item in raw_platforms if str(item).strip()]
+        else:
+            single_platform = str(raw.get("platform") or "").strip()
+            platforms = [single_platform] if single_platform else []
+        return {
+            "sleep_seconds": value,
+            "platforms": platforms,
+            "browser_provider": str(raw.get("browser_provider") or "local").strip().lower(),
+            "browser_session_id": str(raw.get("browser_session_id") or "").strip(),
+        }
 
     def build_task(project_root: Path, python_executable: str, params=None) -> TaskSpec:
         normalized = normalize(params)
@@ -70,6 +84,12 @@ def _build_dummy_definition() -> TaskDefinition:
                     name="Dummy Job",
                     command=command,
                     cwd=project_root,
+                    metadata={
+                        "provider": normalized["browser_provider"],
+                        "browser_session_id": normalized["browser_session_id"],
+                        "platforms": list(normalized["platforms"]),
+                        "sleep_seconds": normalized["sleep_seconds"],
+                    },
                 )
             ],
             concurrent=False,
@@ -240,6 +260,211 @@ def test_preview_response_exposes_stage_max_parallel(client_with_real_service: T
     stage = preview_res.json()["spec"]["stages"][0]
     assert stage["max_parallel"] == 4
     assert len(stage["jobs"]) == 4
+
+
+def test_preview_response_exposes_job_metadata(client_with_real_service: TestClient) -> None:
+    preview_res = client_with_real_service.post(
+        "/api/tasks/sentiment_monitor/preview",
+        json={
+            "params": {
+                "platforms": ["xhs"],
+                "keywords": "alpha,beta",
+                "enable_keyword_search": True,
+                "enable_account_crawl": False,
+                "keyword_job_mode": "single",
+                "keyword_job_max_parallel": 0,
+                "save_option": "json",
+            }
+        },
+    )
+
+    assert preview_res.status_code == 200
+    jobs = preview_res.json()["spec"]["stages"][0]["jobs"]
+    assert [job["key"] for job in jobs] == ["search_xhs_01", "search_xhs_02"]
+    assert jobs[0]["metadata"]["crawl_type"] == "search"
+    assert jobs[0]["metadata"]["platform"] == "xhs"
+    assert jobs[0]["metadata"]["values"] == ["alpha"]
+    assert jobs[0]["metadata"]["group_index"] == 1
+    assert jobs[0]["metadata"]["group_total"] == 2
+    assert jobs[0]["metadata"]["value_count"] == 1
+    assert jobs[0]["metadata"]["job_mode"] == "single"
+    assert jobs[0]["metadata"]["requested_job_mode"] == "single"
+
+
+def test_preview_preserves_explicit_empty_filter_inputs(client_with_real_service: TestClient) -> None:
+    preview_res = client_with_real_service.post(
+        "/api/tasks/sentiment_monitor/preview",
+        json={
+            "preset_id": "preset_sentiment_media_daily_report",
+            "params": {
+                "relevance_must_contain": "",
+                "relevance_exclude_keywords": "",
+                "keyword_whitelist": "",
+                "keyword_blacklist": "",
+            },
+        },
+    )
+
+    assert preview_res.status_code == 200
+    normalized = preview_res.json()["normalized_params"]
+    assert normalized["relevance_must_contain"] == ""
+    assert normalized["relevance_exclude_keywords"] == ""
+    assert normalized["keyword_whitelist"] == ""
+    assert normalized["keyword_blacklist"] == ""
+
+
+def test_browsermint_waiting_user_run_exposes_new_run_fields(
+    client_with_dummy_service: TestClient,
+    dummy_service: TaskCenterService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        dummy_service.browsermint_client,
+        "connect_session",
+        lambda session_id: SimpleNamespace(
+            session_id=session_id,
+            name="Browsermint QA",
+            status="running",
+            cdp_ws_url="ws://browsermint.example/session",
+        ),
+    )
+    monkeypatch.setattr(
+        task_center_module,
+        "probe_browsermint_login",
+        lambda connection, normalized_params: (_ for _ in ()).throw(
+            BrowsermintUserActionRequired("Browsermint session unauthorized 403")
+        ),
+    )
+
+    start_res = client_with_dummy_service.post(
+        "/api/runs",
+        json={
+            "task_slug": "dummy_task",
+            "params": {
+                "sleep_seconds": 0.2,
+                "platforms": ["xhs"],
+                "browser_provider": "browsermint",
+                "browser_session_id": "bm-session-1",
+            },
+        },
+    )
+
+    assert start_res.status_code == 200
+    payload = start_res.json()
+    run_id = payload["id"]
+    assert payload["status"] == "queued"
+    assert payload["normalized_params"]["browser_provider"] == "browsermint"
+    assert payload["normalized_params"]["platforms"] == ["xhs"]
+    assert payload["metrics"]["accepted"] == 0
+    assert payload["metrics"]["filtered"] == 0
+    assert payload["metrics"]["deduped"] == 0
+    assert payload["metrics"]["errors"] == 0
+    assert payload["metrics"]["stalled_jobs"] == 0
+    assert payload["metrics"]["candidate_count"] == 0
+    assert payload["metrics"]["detail_requests"] == 0
+    assert payload["metrics"]["detail_successes"] == 0
+    assert payload["metrics"]["detail_failures"] == 0
+    assert payload["metrics"]["watchdog_stalls"] == 0
+    assert payload["metrics"]["job_failures"] == 0
+    assert payload["metrics"]["user_stops"] == 0
+    assert payload["metrics"]["degraded_jobs"] == 0
+    assert payload["lifecycle"]["phase"] == "queued"
+    assert payload["lifecycle"]["stage_total"] == 1
+    assert payload["progress"]["summary"]["total_jobs"] == 1
+    assert isinstance(payload["warnings"], list)
+    assert payload["issues"] == []
+    assert payload["breakdowns"] == {
+        "status_counts": {},
+        "filter_reasons": [],
+        "platform_status_counts": [],
+        "entity_status_counts": [],
+        "source_keyword_counts": [],
+    }
+    assert payload["stages"][0]["jobs"][0]["metadata"] == {
+        "provider": "browsermint",
+        "browser_session_id": "bm-session-1",
+        "platforms": ["xhs"],
+        "sleep_seconds": 0.2,
+    }
+
+    assert _wait_until(
+        lambda: (dummy_service.get_run(run_id) or {}).get("status") == "waiting_user",
+        timeout=4.0,
+    )
+    run = dummy_service.get_run(run_id)
+    assert run is not None
+    assert run["status"] == "waiting_user"
+    assert run["lifecycle"]["phase"] == "waiting_user"
+    assert run["lifecycle"]["label"] == "Waiting For User"
+    assert run["lifecycle"]["detail"] == "Browsermint session unauthorized 403"
+    assert run["issues"][0]["category_key"] == "auth"
+    assert run["issues"][0]["count"] == 1
+    logs = dummy_service.get_run_logs(run_id, limit=20)
+    assert any(
+        entry["stage_key"] == "__system__"
+        and entry["job_key"] == "preflight"
+        and entry["message"] == "Connecting Browsermint session bm-session-1."
+        for entry in logs
+    )
+    assert any("unauthorized 403" in entry["message"] for entry in logs)
+
+
+def test_browsermint_probe_failure_marks_run_failed(
+    client_with_dummy_service: TestClient,
+    dummy_service: TaskCenterService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        dummy_service.browsermint_client,
+        "connect_session",
+        lambda session_id: SimpleNamespace(
+            session_id=session_id,
+            name="Browsermint QA",
+            status="running",
+            cdp_ws_url="ws://browsermint.example/session",
+        ),
+    )
+    monkeypatch.setattr(
+        task_center_module,
+        "probe_browsermint_login",
+        lambda connection, normalized_params: (_ for _ in ()).throw(
+            BrowsermintProbeFailed("Bilibili 预检探测失败: status=503, message=service unavailable.")
+        ),
+    )
+
+    start_res = client_with_dummy_service.post(
+        "/api/runs",
+        json={
+            "task_slug": "dummy_task",
+            "params": {
+                "sleep_seconds": 0.2,
+                "platforms": ["bili"],
+                "browser_provider": "browsermint",
+                "browser_session_id": "bm-session-2",
+            },
+        },
+    )
+
+    assert start_res.status_code == 200
+    run_id = start_res.json()["id"]
+    assert _wait_until(
+        lambda: (dummy_service.get_run(run_id) or {}).get("status") == "failed",
+        timeout=4.0,
+    )
+
+    run = dummy_service.get_run(run_id)
+    assert run is not None
+    assert run["status"] == "failed"
+    assert run["lifecycle"]["phase"] == "failed"
+    assert run["lifecycle"]["label"] == "Preflight Failed"
+    assert run["lifecycle"]["detail"] == "Bilibili 预检探测失败: status=503, message=service unavailable."
+    logs = dummy_service.get_run_logs(run_id, limit=20)
+    assert any(
+        entry["stage_key"] == "__system__"
+        and entry["job_key"] == "preflight"
+        and entry["message"] == "Bilibili 预检探测失败: status=503, message=service unavailable."
+        for entry in logs
+    )
 
 
 def test_run_start_stop_and_single_active_limit(

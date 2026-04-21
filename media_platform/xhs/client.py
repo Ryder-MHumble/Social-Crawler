@@ -19,7 +19,7 @@
 
 import asyncio
 import json
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Union
 from urllib.parse import urlencode
 
 import httpx
@@ -51,6 +51,7 @@ class XiaoHongShuClient(AbstractApiClient, ProxyRefreshMixin):
         headers: Dict[str, str],
         playwright_page: Page,
         cookie_dict: Dict[str, str],
+        page_factory: Optional[Callable[[], Awaitable[Page]]] = None,
         proxy_ip_pool: Optional["ProxyIpPool"] = None,
     ):
         self.proxy = proxy
@@ -65,6 +66,7 @@ class XiaoHongShuClient(AbstractApiClient, ProxyRefreshMixin):
         self.NOTE_ABNORMAL_CODE = -510001
         self.playwright_page = playwright_page
         self.cookie_dict = cookie_dict
+        self.page_factory = page_factory
         self._extractor = XiaoHongShuExtractor()
         # Initialize proxy pool (from ProxyRefreshMixin)
         self.init_proxy_pool(proxy_ip_pool)
@@ -258,6 +260,24 @@ class XiaoHongShuClient(AbstractApiClient, ProxyRefreshMixin):
         self.headers["Cookie"] = cookie_str
         self.cookie_dict = cookie_dict
 
+    @staticmethod
+    def _normalize_xsec_source(xsec_source: str, default: str = "pc_search") -> str:
+        return str(xsec_source or "").strip() or default
+
+    def _build_note_detail_url(self, note_id: str, xsec_source: str, xsec_token: str) -> str:
+        query = urlencode(
+            {
+                "xsec_token": str(xsec_token or "").strip(),
+                "xsec_source": self._normalize_xsec_source(xsec_source),
+            }
+        )
+        return f"{self._domain}/explore/{note_id}?{query}"
+
+    async def _new_detail_page(self) -> Page:
+        if self.page_factory:
+            return await self.page_factory()
+        return await self.playwright_page.context.new_page()
+
     async def get_note_by_keyword(
         self,
         keyword: str,
@@ -306,8 +326,7 @@ class XiaoHongShuClient(AbstractApiClient, ProxyRefreshMixin):
         Returns:
 
         """
-        if xsec_source == "":
-            xsec_source = "pc_search"
+        xsec_source = self._normalize_xsec_source(xsec_source)
 
         data = {
             "source_note_id": note_id,
@@ -326,6 +345,43 @@ class XiaoHongShuClient(AbstractApiClient, ProxyRefreshMixin):
             f"[XiaoHongShuClient.get_note_by_id] get note id:{note_id} empty and res:{res}"
         )
         return dict()
+
+    @retry(stop=stop_after_attempt(3), wait=wait_fixed(1))
+    async def get_note_by_id_from_browser(
+        self,
+        note_id: str,
+        xsec_source: str,
+        xsec_token: str,
+    ) -> Optional[Dict]:
+        """
+        Get note details by navigating a real browser page and parsing the rendered HTML.
+        This keeps the browser fingerprint aligned with the live session before falling
+        back to a raw HTTP HTML request.
+        """
+        page: Optional[Page] = None
+        try:
+            page = await self._new_detail_page()
+            await page.goto(
+                self._build_note_detail_url(note_id, xsec_source, xsec_token),
+                wait_until="domcontentloaded",
+                timeout=self.timeout * 1000,
+            )
+            try:
+                await page.wait_for_function(
+                    "() => Boolean(window.__INITIAL_STATE__ && window.__INITIAL_STATE__.note && window.__INITIAL_STATE__.note.noteDetailMap)",
+                    timeout=8_000,
+                )
+            except Exception:
+                await page.wait_for_timeout(1_500)
+
+            html = await page.content()
+            return self._extractor.extract_note_detail_from_html(note_id, html)
+        finally:
+            if page:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
 
     async def get_note_comments(
         self,
@@ -668,14 +724,10 @@ class XiaoHongShuClient(AbstractApiClient, ProxyRefreshMixin):
         Returns:
 
         """
-        url = (
-            "https://www.xiaohongshu.com/explore/"
-            + note_id
-            + f"?xsec_token={xsec_token}&xsec_source={xsec_source}"
-        )
+        url = self._build_note_detail_url(note_id, xsec_source, xsec_token)
         copy_headers = self.headers.copy()
         if not enable_cookie:
-            del copy_headers["Cookie"]
+            copy_headers.pop("Cookie", None)
 
         html = await self.request(
             method="GET", url=url, return_response=True, headers=copy_headers

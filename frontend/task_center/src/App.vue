@@ -20,6 +20,7 @@ import {
   fetchTaskPreview,
   fetchTasks,
   initSqlite,
+  normalizeTaskRun,
   startRun,
   stopActiveRun,
   updatePreset,
@@ -28,6 +29,7 @@ import CommandsTab from "./components/CommandsTab.vue";
 import ConfigTab from "./components/ConfigTab.vue";
 import DataTab from "./components/DataTab.vue";
 import ExecutionTab from "./components/ExecutionTab.vue";
+import SelectField from "./components/SelectField.vue";
 import SystemTab from "./components/SystemTab.vue";
 import TopActionBar from "./components/TopActionBar.vue";
 import WorkspaceSidebar from "./components/WorkspaceSidebar.vue";
@@ -90,7 +92,6 @@ const formParams = ref<Record<string, unknown>>({});
 const selectedMainTab = ref<MainTab>("config");
 const selectedConfigGroup = ref("");
 const selectedRunId = ref<string | null>(null);
-const selectedExecutionJobRef = ref<string | null>(null);
 const socketState = ref<"connecting" | "connected" | "disconnected">("connecting");
 const isSystemPanelOpen = ref(false);
 
@@ -131,6 +132,12 @@ let fileTimer: number | null = null;
 let reconnectTimer: number | null = null;
 let clockTimer: number | null = null;
 let socket: WebSocket | null = null;
+let currentLogRunId: string | null = null;
+const seenLogEntryKeys = new Set<string>();
+const pendingBrowsermintAutoOpenRunIds = new Set<string>();
+
+const LAST_TASK_SLUG_KEY = "task_center_last_task_slug";
+const LAST_RUN_ID_KEY = "task_center_last_run_id";
 
 const selectedTask = computed(
   () => tasks.value.find((task) => task.slug === selectedTaskSlug.value) ?? null,
@@ -166,8 +173,31 @@ const runStartGuide = computed<RunGuide | null>(() => {
     };
   }
 
-  const run = activeRun.value;
-  if (!run || run.status !== "running") return null;
+  const run = activeRun.value ?? findRun(selectedRunId.value);
+  if (!run) return null;
+  const status = normalizeRunStatus(run.status);
+  if (status === "waiting_user") {
+    return {
+      title: "任务在预检阶段暂停，等待你完成 Browsermint / 平台侧手动处理。",
+      detail: String(
+        run.lifecycle?.detail
+          ?? run.plan_warnings?.[0]?.detail
+          ?? run.warnings?.[0]?.detail
+          ?? "请先处理会话登录、锁定或风控提示，然后回到这里继续观察状态。",
+      ),
+      openBrowsermint: Boolean(guideBrowsermintDeepLink.value),
+      openLabel: "打开 Browsermint 会话",
+    };
+  }
+  if (status === "queued" || status === "preflight") {
+    return {
+      title: "任务已创建，正在完成 Browsermint / 目标平台预检，暂未开始正式抓取。",
+      detail: String(run.lifecycle?.detail ?? "系统正在连接远端浏览器、校验登录态并确认会话可用。"),
+      openBrowsermint: Boolean(guideBrowsermintDeepLink.value),
+      openLabel: "打开 Browsermint 会话",
+    };
+  }
+  if (!isActiveRunStatus(status)) return null;
 
   const browserProvider = String(run.normalized_params.browser_provider ?? "local")
     .trim()
@@ -175,15 +205,6 @@ const runStartGuide = computed<RunGuide | null>(() => {
   const loginType = String(run.normalized_params.login_type ?? "")
     .trim()
     .toLowerCase();
-
-  if (browserProvider === "browsermint" && loginType === "qrcode") {
-    return {
-      title: "任务已启动，请先在 Browsermint 会话完成扫码/登录确认。",
-      detail: "扫码完成后回到“执行”页查看实时日志；未登录会导致平台接口无权限。",
-      openBrowsermint: Boolean(guideBrowsermintDeepLink.value),
-      openLabel: "打开 Browsermint 去扫码",
-    };
-  }
 
   if (browserProvider === "browsermint") {
     return {
@@ -207,11 +228,57 @@ const runStartGuide = computed<RunGuide | null>(() => {
 });
 
 const guideBrowsermintDeepLink = computed(() => {
+  const selectedRun = findRun(selectedRunId.value);
+  const selectedRunSessionId = String(selectedRun?.normalized_params?.browser_session_id ?? "").trim();
+  if (selectedRunSessionId) {
+    const fromSelectedRun = String(
+      browsermintSessions.value.find((session) => session.session_id === selectedRunSessionId)?.deep_link_url ?? "",
+    ).trim();
+    if (fromSelectedRun) return fromSelectedRun;
+  }
   const fromActiveRun = String(activeRunBrowsermintSession.value?.deep_link_url ?? "").trim();
   if (fromActiveRun) return fromActiveRun;
   const fromFormSelection = String(selectedBrowsermintSession.value?.deep_link_url ?? "").trim();
   return fromFormSelection;
 });
+
+function resolveBrowsermintDeepLinkForRun(run: TaskRun | null): string {
+  if (!run) return "";
+  const sessionId = String(run.normalized_params?.browser_session_id ?? "").trim();
+  if (sessionId) {
+    const matched = browsermintSessions.value.find((session) => session.session_id === sessionId);
+    const fromRunSession = String(matched?.deep_link_url ?? "").trim();
+    if (fromRunSession) return fromRunSession;
+  }
+  return String(guideBrowsermintDeepLink.value ?? "").trim();
+}
+
+function maybeAutoOpenBrowsermintForRun(run: TaskRun | null) {
+  if (!run) return;
+  const runId = String(run.id ?? "").trim();
+  if (!runId || !pendingBrowsermintAutoOpenRunIds.has(runId)) return;
+
+  const status = normalizeRunStatus(run.status);
+  if (["queued", "preflight", "running", "pending", "starting", "active", "in_progress"].includes(status)) {
+    return;
+  }
+
+  pendingBrowsermintAutoOpenRunIds.delete(runId);
+  if (status !== "waiting_user") return;
+
+  const browserProvider = String(run.normalized_params?.browser_provider ?? "")
+    .trim()
+    .toLowerCase();
+  if (browserProvider !== "browsermint") return;
+
+  const deepLink = resolveBrowsermintDeepLinkForRun(run);
+  if (!deepLink) return;
+
+  const popup = window.open(deepLink, "_blank", "noopener");
+  if (!popup && !errorMessage.value) {
+    message.value = "检测到 Browsermint 登录未完成，弹窗可能被浏览器拦截，请点击“打开 Browsermint 会话”。";
+  }
+}
 
 const selectedTaskPresets = computed(() =>
   presets.value.filter((preset) => preset.task_slug === selectedTaskSlug.value),
@@ -287,6 +354,37 @@ function findRun(runId: string | null): TaskRun | null {
   return runs.value.find((run) => run.id === runId) ?? null;
 }
 
+function upsertRunSnapshot(run: TaskRun) {
+  const nextRuns = runs.value.filter((item) => item.id !== run.id);
+  nextRuns.unshift(run);
+  nextRuns.sort((left, right) =>
+    String(right.started_at ?? "").localeCompare(String(left.started_at ?? "")),
+  );
+  runs.value = nextRuns;
+}
+
+function resetLogsForRun(runId: string | null) {
+  currentLogRunId = runId;
+  seenLogEntryKeys.clear();
+  logs.value = [];
+}
+
+function mergeLogs(runId: string, entries: TaskLogEntry[], options: { replace?: boolean } = {}) {
+  if (options.replace || currentLogRunId !== runId) {
+    resetLogsForRun(runId);
+  }
+  if (currentLogRunId !== runId) return;
+  const nextEntries = [...logs.value];
+  const sortedEntries = [...entries].sort((left, right) => Number(left.id ?? 0) - Number(right.id ?? 0));
+  for (const entry of sortedEntries) {
+    const key = `${runId}:${Number(entry.id ?? 0)}`;
+    if (seenLogEntryKeys.has(key)) continue;
+    seenLogEntryKeys.add(key);
+    nextEntries.push(entry);
+  }
+  logs.value = nextEntries.slice(-4000);
+}
+
 const selectedTaskRun = computed(() => {
   const run = findRun(selectedRunId.value);
   if (!run || run.task_slug !== selectedTaskSlug.value) return null;
@@ -351,7 +449,10 @@ function buildStorageSummary(taskSlug: string, params?: Record<string, unknown> 
     return "SQLite · candidate / delivery tables";
   }
   const saveOption = resolveSaveOption(params);
-  if (saveOption === "sqlite") return "SQLite · crawl tables + observations";
+  if (saveOption === "sqlite") {
+    const sqlitePath = sqliteStatus.value?.path?.trim();
+    return sqlitePath ? `SQLite · ${sqlitePath}` : "SQLite · crawl tables + observations";
+  }
   if (saveOption === "json") return "JSON 文件 · runtime/data";
   if (saveOption === "csv") return "CSV 文件 · runtime/data";
   if (saveOption === "excel") return "Excel 文件 · runtime/data";
@@ -374,6 +475,32 @@ function cloneParams(input: Record<string, unknown>): Record<string, unknown> {
 
 function taskDraftKey(taskSlug: string): string {
   return `task_center_draft:${taskSlug}`;
+}
+
+function loadLastTaskSlug(): string {
+  return String(window.localStorage.getItem(LAST_TASK_SLUG_KEY) ?? "").trim();
+}
+
+function saveLastTaskSlug(taskSlug: string) {
+  const value = taskSlug.trim();
+  if (!value) {
+    window.localStorage.removeItem(LAST_TASK_SLUG_KEY);
+    return;
+  }
+  window.localStorage.setItem(LAST_TASK_SLUG_KEY, value);
+}
+
+function loadLastRunId(): string {
+  return String(window.localStorage.getItem(LAST_RUN_ID_KEY) ?? "").trim();
+}
+
+function saveLastRunId(runId: string | null) {
+  const value = String(runId ?? "").trim();
+  if (!value) {
+    window.localStorage.removeItem(LAST_RUN_ID_KEY);
+    return;
+  }
+  window.localStorage.setItem(LAST_RUN_ID_KEY, value);
 }
 
 function loadDraft(taskSlug: string): Record<string, unknown> | null {
@@ -410,12 +537,6 @@ function resetMessages() {
   errorMessage.value = "";
 }
 
-function firstJobRef(run: TaskRun | null): string | null {
-  const stage = run?.stages[0];
-  const job = stage?.jobs[0];
-  return stage && job ? `${stage.key}::${job.key}` : null;
-}
-
 function formatDateTime(value?: string | null): string {
   if (!value) return "未记录";
   const date = new Date(value);
@@ -436,7 +557,7 @@ function normalizeRunStatus(status?: string | null): string {
 
 function runStatusTone(status?: string | null): "running" | "danger" | "success" | "warning" | "neutral" {
   const normalized = normalizeRunStatus(status);
-  if (["running", "queued", "pending", "starting", "active", "in_progress"].includes(normalized)) {
+  if (["queued", "preflight", "running", "pending", "starting", "active", "in_progress"].includes(normalized)) {
     return "running";
   }
   if (["failed", "error", "errored", "timeout", "cancelled", "canceled", "aborted", "stopped"].includes(normalized)) {
@@ -449,6 +570,12 @@ function runStatusTone(status?: string | null): "running" | "danger" | "success"
   return "neutral";
 }
 
+function isActiveRunStatus(status?: string | null): boolean {
+  return ["queued", "preflight", "running", "active", "starting", "in_progress"].includes(
+    normalizeRunStatus(status),
+  );
+}
+
 function resolveSaveOption(params?: Record<string, unknown> | null): string {
   if (String(params?.browser_provider ?? "").trim().toLowerCase() === "browsermint") {
     return "sqlite";
@@ -458,26 +585,49 @@ function resolveSaveOption(params?: Record<string, unknown> | null): string {
     .toLowerCase();
 }
 
-function preferredDataMode(taskSlug?: string | null, saveOption?: string | null): DataBrowseMode {
+function resolveRunSaveOption(run: TaskRun | null): string {
+  const effectiveSaveOption = String(run?.effective_save_option ?? "")
+    .trim()
+    .toLowerCase();
+  if (effectiveSaveOption) return effectiveSaveOption;
+  return resolveSaveOption(run?.normalized_params);
+}
+
+function preferredDataMode(
+  taskSlug?: string | null,
+  saveOption?: string | null,
+  storageBackend?: string | null,
+): DataBrowseMode {
+  const normalizedBackend = String(storageBackend ?? "").trim().toLowerCase();
   if (taskSlug === "creator_outreach") return "sqlite";
-  return ["json", "csv", "excel"].includes(String(saveOption ?? "").toLowerCase()) ? "files" : "sqlite";
+  if (normalizedBackend === "sqlite") return "sqlite";
+  if (["filesystem", "files", "local_files", "file"].includes(normalizedBackend)) return "files";
+  return ["json", "csv", "excel", "xlsx", "xls"].includes(String(saveOption ?? "").toLowerCase())
+    ? "files"
+    : "sqlite";
 }
 
 function preferredFileType(saveOption?: string | null): string {
   const normalized = String(saveOption ?? "").toLowerCase();
-  if (normalized === "json" || normalized === "csv") return normalized;
+  if (normalized === "json" || normalized === "csv" || normalized === "xlsx" || normalized === "xls") {
+    return normalized;
+  }
   return "";
 }
 
 function resolveRunPlatforms(run: TaskRun | null): string[] {
   if (!run) return [];
-  const rawPlatforms = run.normalized_params.platforms;
+  const params =
+    run.normalized_params && typeof run.normalized_params === "object"
+      ? run.normalized_params
+      : {};
+  const rawPlatforms = params.platforms;
   if (Array.isArray(rawPlatforms)) {
     return rawPlatforms
       .map((platform) => String(platform).trim())
       .filter(Boolean);
   }
-  const singlePlatform = String(run.normalized_params.platform ?? "").trim();
+  const singlePlatform = String(params.platform ?? "").trim();
   return singlePlatform ? [singlePlatform] : [];
 }
 
@@ -548,15 +698,30 @@ async function initialize() {
     tasks.value = loadedTasks;
     presets.value = loadedPresets;
     runs.value = loadedRuns;
-    activeRun.value = loadedActiveRun;
+    activeRun.value = loadedActiveRun && isActiveRunStatus(loadedActiveRun.status) ? loadedActiveRun : null;
     sqliteStatus.value = loadedSqliteStatus;
+
+    const lastTaskSlug = loadLastTaskSlug();
+    const lastRunId = loadLastRunId();
+    const runningFromHistory = loadedRuns.find((run) => isActiveRunStatus(run.status)) ?? null;
+    const preferredRun = loadedActiveRun ?? runningFromHistory;
 
     const defaultPreset =
       loadedPresets.find((preset) => preset.is_default) ??
       loadedPresets.find((preset) => preset.task_slug === loadedTasks[0]?.slug) ??
       loadedPresets[0] ??
       null;
-    const initialTaskSlug = defaultPreset?.task_slug ?? loadedTasks[0]?.slug ?? "";
+    const initialTaskSlug =
+      (preferredRun && loadedTasks.some((task) => task.slug === preferredRun.task_slug)
+        ? preferredRun.task_slug
+        : "") ||
+      (lastTaskSlug && loadedTasks.some((task) => task.slug === lastTaskSlug)
+        ? lastTaskSlug
+        : "") ||
+      defaultPreset?.task_slug ||
+      loadedTasks[0]?.slug ||
+      "";
+
     if (initialTaskSlug) {
       selectedTaskSlug.value = initialTaskSlug;
       const preset =
@@ -566,10 +731,18 @@ async function initialize() {
       applyPreset(preset);
     }
 
-    const initialRun =
-      [loadedActiveRun, ...loadedRuns].find(
-        (run): run is TaskRun => run !== null && run.task_slug === initialTaskSlug,
-      ) ?? null;
+    const initialRunCandidates = [loadedActiveRun, ...loadedRuns].filter(
+      (run): run is TaskRun => run !== null && run.task_slug === initialTaskSlug,
+    );
+    const lastRunCandidate =
+      (lastRunId &&
+        initialRunCandidates.find((run) => run.id === lastRunId)) ||
+      null;
+    const preferredRunCandidate =
+      (preferredRun && preferredRun.task_slug === initialTaskSlug ? preferredRun : null) ??
+      null;
+    const initialRun = preferredRunCandidate ?? lastRunCandidate ?? initialRunCandidates[0] ?? null;
+
     selectedRunId.value = initialRun?.id ?? null;
     if (initialRun) {
       applyRunDataContext(initialRun);
@@ -577,7 +750,7 @@ async function initialize() {
       applyTaskDataDefaults(initialTaskSlug);
     }
     if (selectedRunId.value) {
-      logs.value = await fetchRunLogs(selectedRunId.value, 1000);
+      mergeLogs(selectedRunId.value, await fetchRunLogs(selectedRunId.value, 1000), { replace: true });
     }
     await refreshSqliteTables();
     connectSocket();
@@ -724,6 +897,15 @@ function scheduleFileLoad() {
   }, 200);
 }
 
+function refreshVisibleDataContext(runId: string | null) {
+  if (selectedMainTab.value !== "data" || !runId || displayedRun.value?.id !== runId) return;
+  if (selectedDataMode.value === "sqlite") {
+    scheduleDataLoad();
+    return;
+  }
+  scheduleFileLoad();
+}
+
 async function triggerPreview() {
   if (!selectedTask.value) {
     preview.value = null;
@@ -757,22 +939,26 @@ function connectSocket() {
   socket.onmessage = async (event) => {
     const payload = JSON.parse(event.data);
     if (payload.type === "run_updated" && payload.run) {
-      const nextRun = payload.run as TaskRun;
-      activeRun.value = nextRun;
+      const previousDisplayedRunId = displayedRun.value?.id ?? null;
+      const nextRun = normalizeTaskRun(payload.run as TaskRun);
+      if (!nextRun) return;
+      upsertRunSnapshot(nextRun);
+      activeRun.value = isActiveRunStatus(nextRun.status) ? nextRun : null;
+      maybeAutoOpenBrowsermintForRun(nextRun);
       if (!selectedRunId.value && nextRun.task_slug === selectedTaskSlug.value) {
         selectedRunId.value = nextRun.id;
         applyRunDataContext(nextRun);
-      } else if (selectedRunId.value === nextRun.id && nextRun.task_slug === selectedTaskSlug.value) {
-        applyRunDataContext(nextRun);
+      } else if (previousDisplayedRunId === nextRun.id) {
+        refreshVisibleDataContext(nextRun.id);
       }
-      if (nextRun.status !== "running") {
+      if (!isActiveRunStatus(nextRun.status)) {
         await refreshRunsList();
       }
       return;
     }
     if (payload.type === "log" && payload.entry) {
-      if (payload.run_id === selectedRunId.value) {
-        logs.value = [...logs.value, payload.entry as TaskLogEntry].slice(-4000);
+      if (payload.run_id === displayedRun.value?.id) {
+        mergeLogs(String(payload.run_id), [payload.entry as TaskLogEntry]);
       }
     }
   };
@@ -800,7 +986,6 @@ function handleSelectTask(taskSlug: string) {
       (run): run is TaskRun => run !== null && run.task_slug === taskSlug,
     ) ?? null;
   selectedRunId.value = scopedRun?.id ?? null;
-  selectedExecutionJobRef.value = firstJobRef(scopedRun);
   if (scopedRun) {
     applyRunDataContext(scopedRun);
     return;
@@ -811,14 +996,6 @@ function handleSelectTask(taskSlug: string) {
 function handleSelectPreset(presetId: string | null) {
   const preset = selectedTaskPresets.value.find((item) => item.id === presetId) ?? null;
   applyPreset(preset);
-}
-
-function isBrowsermintQrcode(
-  params: Record<string, unknown> | TaskRun["normalized_params"] | null | undefined,
-): boolean {
-  const browserProvider = String(params?.browser_provider ?? "local").trim().toLowerCase();
-  const loginType = String(params?.login_type ?? "").trim().toLowerCase();
-  return browserProvider === "browsermint" && loginType === "qrcode";
 }
 
 async function handleCreatePreset() {
@@ -882,13 +1059,6 @@ async function handleDeletePreset() {
 
 async function handleStartRun() {
   if (!selectedTask.value) return;
-  const needsBrowsermintQrcodeGuide = isBrowsermintQrcode(formParams.value);
-  const deepLink = guideBrowsermintDeepLink.value;
-  const popup =
-    needsBrowsermintQrcodeGuide && deepLink
-      ? window.open(deepLink, "_blank", "noopener")
-      : null;
-
   isStartingRun.value = true;
   resetMessages();
   try {
@@ -898,26 +1068,18 @@ async function handleStartRun() {
       preset_id: selectedPresetId.value,
     });
     activeRun.value = run;
+    upsertRunSnapshot(run);
     selectedRunId.value = run.id;
-    selectedExecutionJobRef.value = firstJobRef(run);
-    logs.value = [];
-    await refreshRunsList();
-    if (isBrowsermintQrcode(run.normalized_params)) {
-      message.value = "任务已启动，请在 Browsermint 会话完成扫码后返回执行页查看日志。";
-      if (!popup && deepLink) {
-        window.open(deepLink, "_blank", "noopener");
-      }
-    } else {
-      message.value = "任务已启动";
-      if (popup && !popup.closed) {
-        popup.close();
-      }
-    }
     selectedMainTab.value = "execution";
-  } catch (error) {
-    if (popup && !popup.closed) {
-      popup.close();
+    applyRunDataContext(run);
+    resetLogsForRun(run.id);
+    if (String(run.normalized_params.browser_provider ?? "").trim().toLowerCase() === "browsermint") {
+      pendingBrowsermintAutoOpenRunIds.add(run.id);
+      maybeAutoOpenBrowsermintForRun(run);
     }
+    await refreshRunsList();
+    message.value = "任务已启动";
+  } catch (error) {
     errorMessage.value = (error as Error).message;
   } finally {
     isStartingRun.value = false;
@@ -967,9 +1129,9 @@ async function handleInitSqlite() {
 }
 
 function applyRunDataContext(run: TaskRun) {
-  const saveOption = resolveSaveOption(run.normalized_params);
+  const saveOption = resolveRunSaveOption(run);
   const runPlatforms = resolveRunPlatforms(run);
-  selectedDataMode.value = preferredDataMode(run.task_slug, saveOption);
+  selectedDataMode.value = preferredDataMode(run.task_slug, saveOption, run.runtime_storage_backend);
 
   dataFilters.value = {
     ...dataFilters.value,
@@ -1001,8 +1163,8 @@ function clearRunDataContext() {
 function handleSelectRun(runId: string) {
   const run = findRun(runId);
   if (!run || run.task_slug !== selectedTaskSlug.value) return;
+  if (selectedRunId.value === run.id) return;
   selectedRunId.value = run.id;
-  selectedExecutionJobRef.value = firstJobRef(run);
   applyRunDataContext(run);
 }
 
@@ -1049,6 +1211,23 @@ watch(
 );
 
 watch(
+  selectedTaskSlug,
+  (taskSlug) => {
+    if (!taskSlug) return;
+    saveLastTaskSlug(taskSlug);
+  },
+  { immediate: false },
+);
+
+watch(
+  selectedRunId,
+  (runId) => {
+    saveLastRunId(runId);
+  },
+  { immediate: false },
+);
+
+watch(
   formParams,
   () => {
     saveDraft();
@@ -1088,13 +1267,18 @@ watch(
 );
 
 watch(
-  displayedRun,
-  async (run) => {
-    selectedExecutionJobRef.value = firstJobRef(run);
-    if (run?.id) {
-      logs.value = await fetchRunLogs(run.id, 1000);
-    } else {
-      logs.value = [];
+  () => displayedRun.value?.id ?? null,
+  async (runId) => {
+    if (!runId) {
+      resetLogsForRun(null);
+      return;
+    }
+    const existing = currentLogRunId === runId ? [...logs.value] : [];
+    const fetched = await fetchRunLogs(runId, 1000);
+    if (displayedRun.value?.id !== runId) return;
+    mergeLogs(runId, fetched, { replace: true });
+    if (existing.length) {
+      mergeLogs(runId, existing);
     }
   },
   { immediate: false },
@@ -1287,29 +1471,26 @@ onBeforeUnmount(() => {
             </div>
             <div class="run-context-metric">
               <span>Accepted</span>
-              <strong>{{ displayedRun.metrics.accepted }}</strong>
+              <strong>{{ displayedRun.metrics?.accepted ?? 0 }}</strong>
             </div>
             <div class="run-context-metric">
               <span>Filtered</span>
-              <strong>{{ displayedRun.metrics.filtered }}</strong>
+              <strong>{{ displayedRun.metrics?.filtered ?? 0 }}</strong>
             </div>
             <div class="run-context-metric">
               <span>Deduped</span>
-              <strong>{{ displayedRun.metrics.deduped }}</strong>
+              <strong>{{ displayedRun.metrics?.deduped ?? 0 }}</strong>
             </div>
           </div>
           <div v-if="displayedRun" class="run-context-actions">
             <div class="run-switch-field">
               <span>当前 run</span>
-              <select
-                :value="displayedRun.id"
+              <SelectField
+                :model-value="displayedRun.id"
+                :options="runSelectOptions"
                 :disabled="!taskRuns.length"
-                @change="handleRunSwitch(($event.target as HTMLSelectElement).value)"
-              >
-                <option v-for="option in runSelectOptions" :key="option.value" :value="option.value">
-                  {{ option.label }}
-                </option>
-              </select>
+                @update:model-value="handleRunSwitch"
+              />
             </div>
           </div>
           <div v-else class="empty-state compact">当前任务还没有可用的运行记录。</div>
@@ -1341,9 +1522,7 @@ onBeforeUnmount(() => {
           v-else-if="selectedMainTab === 'execution'"
           :run="displayedRun"
           :logs="logs"
-          :selected-job-ref="selectedExecutionJobRef"
           :now="now"
-          @select-job="selectedExecutionJobRef = $event"
         />
 
         <DataTab
@@ -1362,7 +1541,7 @@ onBeforeUnmount(() => {
           :selected-run="displayedRun"
           :loading="isDataLoading"
           :file-loading="isFileLoading"
-          :sqlite-path="sqliteStatus?.path ?? 'runtime/data/sqlite.db'"
+          :sqlite-path="sqliteStatus?.path ?? ''"
           @update-filter="updateDataFilter"
           @update-file-filter="updateFileFilter"
           @switch-mode="selectedDataMode = $event"

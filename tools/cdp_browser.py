@@ -18,15 +18,16 @@
 # 使用本代码即表示您同意遵守上述原则和LICENSE中的所有条款。
 
 
-import os
 import asyncio
-import socket
-import httpx
-import signal
 import atexit
+import os
+import signal
+import socket
 from pathlib import Path
 from typing import Optional, Dict, Any
-from playwright.async_api import Browser, BrowserContext, Playwright
+
+import httpx
+from playwright.async_api import Browser, BrowserContext, Page, Playwright
 
 import config
 from tools.browser_launcher import BrowserLauncher
@@ -47,6 +48,7 @@ class CDPBrowserManager:
         self._remote_mode: bool = False
         self._owns_remote_context: bool = False
         self._remote_initial_page_guids: set[str] = set()
+        self._managed_page_guids: set[str] = set()
 
     def _register_cleanup_handlers(self):
         """
@@ -112,6 +114,7 @@ class CDPBrowserManager:
         try:
             self._owns_remote_context = False
             self._remote_initial_page_guids = set()
+            self._managed_page_guids = set()
             remote_ws_url = (getattr(config, "CDP_REMOTE_WS_URL", "") or "").strip()
             if remote_ws_url:
                 self._remote_mode = True
@@ -367,15 +370,34 @@ class CDPBrowserManager:
         except Exception:
             return ""
 
-    async def _cleanup_remote_pages(self):
+    def track_page(self, page: Page) -> None:
+        page_guid = self._page_guid(page)
+        if page_guid:
+            self._managed_page_guids.add(page_guid)
+
+    def untrack_page(self, page: Page) -> None:
+        page_guid = self._page_guid(page)
+        if page_guid:
+            self._managed_page_guids.discard(page_guid)
+
+    async def new_page(self) -> Page:
         if not self.browser_context:
+            raise RuntimeError("Browser context not initialized")
+        page = await self.browser_context.new_page()
+        self.track_page(page)
+        return page
+
+    async def _cleanup_remote_pages(self):
+        if not self.browser_context or not self._managed_page_guids:
             return
+        owned_page_guids = set(self._managed_page_guids)
         for page in list(self.browser_context.pages):
             page_guid = self._page_guid(page)
-            if page_guid and page_guid in self._remote_initial_page_guids:
+            if not page_guid or page_guid not in owned_page_guids:
                 continue
             try:
                 await page.close()
+                self._managed_page_guids.discard(page_guid)
             except Exception as page_error:
                 error_msg = str(page_error).lower()
                 if "closed" not in error_msg and "disconnected" not in error_msg:
@@ -459,6 +481,7 @@ class CDPBrowserManager:
                     self.browser_context = None
                     self._owns_remote_context = False
                     self._remote_initial_page_guids = set()
+                    self._managed_page_guids = set()
 
             # Disconnect browser
             if self.browser:

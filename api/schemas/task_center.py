@@ -58,6 +58,7 @@ class TaskJobResponse(BaseModel):
     termination_reason: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class TaskStageResponse(BaseModel):
@@ -79,6 +80,10 @@ class TaskPreviewResponse(BaseModel):
     task: TaskTemplateResponse
     normalized_params: dict[str, Any] = Field(default_factory=dict)
     spec: dict[str, Any]
+    effective_plan: dict[str, Any] = Field(default_factory=dict)
+    plan_warnings: list[dict[str, Any]] = Field(default_factory=list)
+    effective_save_option: str = ""
+    runtime_storage_backend: str = ""
 
 
 class TaskPresetResponse(BaseModel):
@@ -120,6 +125,14 @@ class TaskRunResponse(BaseModel):
     finished_at: str | None = None
     log_path: str | None = None
     metrics: dict[str, int] = Field(default_factory=dict)
+    lifecycle: dict[str, Any] = Field(default_factory=dict)
+    progress: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[dict[str, Any]] = Field(default_factory=list)
+    effective_plan: dict[str, Any] = Field(default_factory=dict)
+    effective_save_option: str = ""
+    runtime_storage_backend: str = ""
+    issues: list[dict[str, Any]] = Field(default_factory=list)
+    breakdowns: dict[str, Any] = Field(default_factory=dict)
     stages: list[TaskStageResponse] = Field(default_factory=list)
 
 

@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -71,6 +72,17 @@ def _env_csv(name: str, default: list[str]) -> list[str]:
     return deduped
 
 
+def _env_json_list(name: str, default: list) -> list:
+    raw = os.getenv(name)
+    if raw is None:
+        return list(default)
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return list(default)
+    return value if isinstance(value, list) else list(default)
+
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_RUNTIME_DIR = os.getenv("SOCIAL_CRAWLER_RUNTIME_DIR", str(_PROJECT_ROOT / "runtime"))
 _DEFAULT_DATA_DIR = os.getenv("SOCIAL_CRAWLER_DATA_DIR", str(Path(_DEFAULT_RUNTIME_DIR) / "data"))
@@ -123,13 +135,14 @@ MIN_COMMENT_LENGTH = max(0, _env_int("MIN_COMMENT_LENGTH", 5))
 
 # ==================== Official Accounts ====================
 # Whether to crawl specified official accounts in addition to keyword search.
-ENABLE_OFFICIAL_ACCOUNTS_CRAWL = _env_bool("ENABLE_OFFICIAL_ACCOUNTS_CRAWL", True)
+ENABLE_OFFICIAL_ACCOUNTS_CRAWL = _env_bool("ENABLE_OFFICIAL_ACCOUNTS_CRAWL", False)
 
 # Xiaohongshu official accounts
-XHS_OFFICIAL_ACCOUNTS = [
+_DEFAULT_XHS_OFFICIAL_ACCOUNTS = [
     {"user_id": "5bebb72379896c00014f3295", "name": "beijing_zhongguancun_college"},
     {"user_id": "68685a82000000001d009ebb", "name": "shanghai_chuangzhi_college"},
 ]
+XHS_OFFICIAL_ACCOUNTS = _env_json_list("XHS_OFFICIAL_ACCOUNTS", _DEFAULT_XHS_OFFICIAL_ACCOUNTS)
 
 # Bilibili official accounts
 BILI_OFFICIAL_ACCOUNTS = [

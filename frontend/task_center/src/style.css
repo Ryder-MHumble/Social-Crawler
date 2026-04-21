@@ -359,15 +359,8 @@ summary::-webkit-details-marker {
   font-weight: 600;
 }
 
-.run-switch-field select {
-  min-height: var(--control-height);
+.run-switch-field .select-field {
   width: 100%;
-  padding: 0 14px;
-  border-radius: 14px;
-  border: 1px solid rgba(17, 24, 39, 0.12);
-  background: rgba(255, 255, 255, 0.96);
-  color: var(--ink);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
 .main-tabs {
@@ -648,13 +641,14 @@ summary::-webkit-details-marker {
 
 .select-field {
   position: relative;
-  display: flex;
-  align-items: center;
+  display: block;
   min-height: var(--control-height);
   border-radius: 14px;
   border: 1px solid rgba(17, 24, 39, 0.12);
   background: rgba(255, 255, 255, 0.96);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    0 8px 16px rgba(15, 23, 34, 0.03);
 }
 
 .select-field.compact {
@@ -665,15 +659,134 @@ summary::-webkit-details-marker {
   opacity: 0.55;
 }
 
-.select-field select {
+.select-field.open {
+  border-color: rgba(31, 79, 209, 0.32);
+}
+
+.select-field-trigger {
   width: 100%;
   min-height: inherit;
-  padding: 0 40px 0 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px 8px 14px;
   border: 0;
   border-radius: inherit;
   background: transparent;
   color: var(--ink);
-  appearance: none;
+  text-align: left;
+}
+
+.select-field.compact .select-field-trigger {
+  min-height: var(--control-height-sm);
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
+.select-value {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+
+.select-value strong {
+  font-size: 13px;
+  line-height: 1.4;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.select-value small {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.select-field.compact .select-value small {
+  display: none;
+}
+
+.select-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 280px;
+  overflow: auto;
+  padding: 8px;
+  border-radius: 14px;
+  border: 1px solid rgba(17, 24, 39, 0.12);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 18px 30px rgba(15, 23, 34, 0.14);
+}
+
+.select-option {
+  width: 100%;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(17, 24, 39, 0.02);
+  color: var(--ink);
+  text-align: left;
+}
+
+.select-option:hover,
+.select-option.active {
+  background: rgba(31, 79, 209, 0.08);
+}
+
+.select-option.selected {
+  background: rgba(31, 79, 209, 0.12);
+}
+
+.select-option-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+
+.select-option-copy strong,
+.select-option-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.select-option-copy strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.select-option-copy small {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.select-option-check {
+  opacity: 0;
+  color: var(--primary);
+  font-weight: 700;
+}
+
+.select-option.selected .select-option-check {
+  opacity: 1;
 }
 
 .select-field:focus-within,
@@ -684,15 +797,17 @@ textarea:focus {
 }
 
 .select-chevron {
-  position: absolute;
-  right: 12px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 18px;
   height: 18px;
   color: var(--muted);
-  pointer-events: none;
+  transition: transform 0.16s ease;
+}
+
+.select-field.open .select-chevron {
+  transform: rotate(180deg);
 }
 
 .select-chevron svg {

@@ -1236,6 +1236,102 @@ class SQLiteStorage:
             "errors": counts.get("error", 0),
         }
 
+    def get_run_breakdowns(self, run_id: str) -> dict[str, Any]:
+        if not run_id or not self.is_initialized():
+            return {
+                "status_counts": {},
+                "filter_reasons": [],
+                "platform_status_counts": [],
+                "entity_status_counts": [],
+                "source_keyword_counts": [],
+            }
+
+        with self._lock:
+            with self._connect() as conn:
+                status_rows = conn.execute(
+                    """
+                    SELECT clean_status, COUNT(*) AS count
+                    FROM crawl_observations
+                    WHERE run_id = ?
+                    GROUP BY clean_status
+                    """,
+                    (run_id,),
+                ).fetchall()
+                filter_reason_rows = conn.execute(
+                    """
+                    SELECT clean_reason, COUNT(*) AS count
+                    FROM crawl_observations
+                    WHERE run_id = ? AND clean_status = 'filtered' AND clean_reason != ''
+                    GROUP BY clean_reason
+                    ORDER BY count DESC, clean_reason ASC
+                    LIMIT 8
+                    """,
+                    (run_id,),
+                ).fetchall()
+                platform_rows = conn.execute(
+                    """
+                    SELECT platform, clean_status, COUNT(*) AS count
+                    FROM crawl_observations
+                    WHERE run_id = ?
+                    GROUP BY platform, clean_status
+                    ORDER BY platform ASC, clean_status ASC
+                    """,
+                    (run_id,),
+                ).fetchall()
+                entity_rows = conn.execute(
+                    """
+                    SELECT entity_type, clean_status, COUNT(*) AS count
+                    FROM crawl_observations
+                    WHERE run_id = ?
+                    GROUP BY entity_type, clean_status
+                    ORDER BY entity_type ASC, clean_status ASC
+                    """,
+                    (run_id,),
+                ).fetchall()
+                keyword_rows = conn.execute(
+                    """
+                    SELECT source_keyword, COUNT(*) AS count
+                    FROM crawl_observations
+                    WHERE run_id = ? AND source_keyword != ''
+                    GROUP BY source_keyword
+                    ORDER BY count DESC, source_keyword ASC
+                    LIMIT 12
+                    """,
+                    (run_id,),
+                ).fetchall()
+
+        return {
+            "status_counts": {
+                row["clean_status"]: int(row["count"])
+                for row in status_rows
+                if row["clean_status"]
+            },
+            "filter_reasons": [
+                {"reason": row["clean_reason"], "count": int(row["count"])}
+                for row in filter_reason_rows
+            ],
+            "platform_status_counts": self._collapse_status_rows(platform_rows, key_name="platform"),
+            "entity_status_counts": self._collapse_status_rows(entity_rows, key_name="entity_type"),
+            "source_keyword_counts": [
+                {"source_keyword": row["source_keyword"], "count": int(row["count"])}
+                for row in keyword_rows
+            ],
+        }
+
+    @staticmethod
+    def _collapse_status_rows(rows: list[Any], *, key_name: str) -> list[dict[str, Any]]:
+        grouped: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            key = str(row[key_name] or "").strip()
+            if not key:
+                continue
+            payload = grouped.setdefault(key, {key_name: key, "counts": {}, "total": 0})
+            status = str(row["clean_status"] or "").strip()
+            count = int(row["count"])
+            payload["counts"][status] = count
+            payload["total"] += count
+        return list(grouped.values())
+
 
 _storage_instance: SQLiteStorage | None = None
 

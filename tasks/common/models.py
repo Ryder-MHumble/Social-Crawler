@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 
 @dataclass
@@ -11,6 +12,7 @@ class TaskJob:
     command: list[str]
     cwd: Path
     env: dict[str, str] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -32,3 +34,4 @@ class TaskSpec:
     welcome_lines: list[str]
     stages: list[TaskStage]
     aliases: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)

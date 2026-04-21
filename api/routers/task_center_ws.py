@@ -27,6 +27,7 @@ async def websocket_active_run(
                 await websocket.send_json(
                     {"type": "log", "run_id": active_run["id"], "entry": log_entry}
                 )
+        last_event_id = service.get_latest_event_id()
 
         while True:
             events = service.get_events_since(last_event_id)

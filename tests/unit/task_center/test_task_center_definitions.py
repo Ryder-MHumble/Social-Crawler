@@ -253,6 +253,64 @@ def test_sentiment_monitor_keyword_job_split_expands_platform_keyword_matrix(tmp
     ]
 
 
+def test_sentiment_monitor_browsermint_preview_emits_effective_plan_and_preserves_save_option(
+    tmp_path: Path,
+) -> None:
+    service = _build_service(tmp_path)
+
+    preview = service.preview_task(
+        "sentiment_monitor",
+        params={
+            "platforms": ["xhs"],
+            "keywords": "alpha,beta,gamma",
+            "enable_keyword_search": True,
+            "enable_account_crawl": False,
+            "browser_provider": "browsermint",
+            "browser_session_id": "bm-session-1",
+            "keyword_job_mode": "single",
+            "keyword_job_max_parallel": 3,
+            "save_option": "json",
+        },
+    )
+
+    normalized = preview["normalized_params"]
+    assert normalized["save_option"] == "json"
+    assert preview["effective_save_option"] == "json"
+    assert preview["runtime_storage_backend"] == "file:json"
+    assert preview["effective_plan"]["mode"] == "browsermint_single_session_safe"
+    assert preview["plan_warnings"]
+    assert any(
+        warning.get("code") == "degraded_parallelism"
+        for warning in preview["plan_warnings"]
+    )
+
+    stage = preview["spec"]["stages"][0]
+    assert stage["concurrent"] is False
+    assert stage["max_parallel"] == 1
+    assert len(stage["jobs"]) == 1
+    assert _command_value(stage["jobs"][0]["command"], "--keywords") == "alpha,beta,gamma"
+
+
+def test_sentiment_monitor_official_accounts_are_task_controlled(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+
+    preview = service.preview_task(
+        "sentiment_monitor",
+        params={
+            "platforms": ["xhs"],
+            "enable_keyword_search": False,
+            "enable_account_crawl": False,
+            "enable_official_accounts_crawl": True,
+            "official_account_targets": "https://www.xiaohongshu.com/user/profile/abc123",
+            "save_option": "json",
+        },
+    )
+
+    stages = preview["spec"]["stages"]
+    assert [stage["key"] for stage in stages] == ["sentiment_official_account_crawl"]
+    assert stages[0]["jobs"][0]["metadata"]["crawl_type"] == "official_accounts"
+
+
 def test_sentiment_monitor_creator_job_chunking_splits_account_targets(tmp_path: Path) -> None:
     service = _build_service(tmp_path)
 
