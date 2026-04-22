@@ -10,6 +10,8 @@ from tasks.sentiment_monitor.task import build_definition as build_sentiment_def
 from tasks.sentiment_monitor.task import build_task as build_sentiment_task
 from tasks.vibe_coding.task import build_definition as build_vibe_definition
 from tasks.vibe_coding.task import build_task as build_vibe_task
+from tasks.xhs_business_seed.task import build_definition as build_xhs_business_seed_definition
+from tasks.xhs_business_seed.task import build_task as build_xhs_business_seed_task
 
 
 def load_task_definitions() -> list[TaskDefinition]:
@@ -17,6 +19,7 @@ def load_task_definitions() -> list[TaskDefinition]:
         build_sentiment_definition(),
         build_creator_outreach_definition(),
         build_vibe_definition(),
+        build_xhs_business_seed_definition(),
     ]
 
 
@@ -25,6 +28,7 @@ def load_task_specs(project_root: Path, python_executable: str) -> list[TaskSpec
         build_sentiment_task(project_root, python_executable),
         build_creator_outreach_task(project_root, python_executable),
         build_vibe_task(project_root, python_executable),
+        build_xhs_business_seed_task(project_root, python_executable),
     ]
 
 

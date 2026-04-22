@@ -34,6 +34,7 @@ from tools import utils
 
 
 class XiaoHongShuLogin(AbstractLogin):
+    PROFILE_LINK_SELECTOR = "xpath=//a[contains(@href, '/user/profile/')]"
 
     def __init__(self,
                  login_type: str,
@@ -58,12 +59,12 @@ class XiaoHongShuLogin(AbstractLogin):
             # Selector for elements containing "Me" text with a link pointing to the profile
             # XPath Explanation: Find a span with text "Me" inside an anchor tag (<a>) 
             # whose href attribute contains "/user/profile/"
-            user_profile_selector = "xpath=//a[contains(@href, '/user/profile/')]//span[text()='我']"
+            user_profile_selector = self.PROFILE_LINK_SELECTOR
             
             # Set a short timeout since this is called within a retry loop
             is_visible = await self.context_page.is_visible(user_profile_selector, timeout=500)
             if is_visible:
-                utils.logger.info("[XiaoHongShuLogin.check_login_state] Login status confirmed by UI element ('Me' button).")
+                utils.logger.info("[XiaoHongShuLogin.check_login_state] Login status confirmed by profile link.")
                 return True
         except Exception:
             pass
@@ -173,10 +174,11 @@ class XiaoHongShuLogin(AbstractLogin):
     async def login_by_qrcode(self):
         """login xiaohongshu website and keep webdriver login state"""
         utils.logger.info("[XiaoHongShuLogin.login_by_qrcode] Begin login xiaohongshu by qrcode ...")
+        user_profile_selector = self.PROFILE_LINK_SELECTOR
         # Some page variants are already authenticated when popup appears.
         # If profile link is visible, skip qr-login flow directly.
         try:
-            already_logged_in = await self.context_page.is_visible("a[href*='/user/profile/']", timeout=1200)
+            already_logged_in = await self.context_page.is_visible(user_profile_selector, timeout=1200)
             if already_logged_in:
                 utils.logger.info("[XiaoHongShuLogin.login_by_qrcode] Already logged in on page, skip qrcode flow.")
                 return
@@ -197,7 +199,7 @@ class XiaoHongShuLogin(AbstractLogin):
             login_button_ele = self.context_page.locator("xpath=//*[@id='app']/div[1]/div[2]/div[1]/ul/div[1]/button")
             await login_button_ele.click()
             try:
-                already_logged_in = await self.context_page.is_visible("a[href*='/user/profile/']", timeout=1200)
+                already_logged_in = await self.context_page.is_visible(user_profile_selector, timeout=1200)
                 if already_logged_in:
                     utils.logger.info("[XiaoHongShuLogin.login_by_qrcode] Already logged in after opening popup, skip qrcode.")
                     return
@@ -255,7 +257,7 @@ class XiaoHongShuLogin(AbstractLogin):
 
         # Check if logged in by looking for profile element
         try:
-            user_profile_selector = "xpath=//a[contains(@href, '/user/profile/')]//span[text()='我']"
+            user_profile_selector = self.PROFILE_LINK_SELECTOR
             is_logged_in = await self.context_page.is_visible(user_profile_selector, timeout=3000)
 
             if is_logged_in:

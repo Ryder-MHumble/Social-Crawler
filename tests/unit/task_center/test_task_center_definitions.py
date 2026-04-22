@@ -635,3 +635,29 @@ def test_stale_seed_presets_are_pruned_without_touching_user_presets(tmp_path: P
     assert "preset_creator_dm_dry_run" not in preset_ids
     assert "preset_creator_campaign_dry_run" in preset_ids
     assert "preset_creator_user_saved" in preset_ids
+
+
+def test_xhs_business_seed_preview_builds_parallel_batches(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+
+    preview = service.preview_task("xhs_business_seed", params={})
+
+    normalized = preview["normalized_params"]
+    assert normalized["keyword_buckets"] == ["core", "scene"]
+    assert normalized["parallel_jobs"] == 4
+    assert normalized["enable_comments"] is False
+
+    stages = preview["spec"]["stages"]
+    assert len(stages) == 2
+    assert stages[0]["key"] == "xhs_business_seed_login_bootstrap"
+    assert stages[1]["key"] == "xhs_business_seed_parallel_crawl"
+
+    bootstrap_command = stages[0]["jobs"][0]["command"]
+    assert _command_value(bootstrap_command, "--profile-mode") == "shared"
+
+    jobs = stages[1]["jobs"]
+    assert len(jobs) == 4
+    command = jobs[0]["command"]
+    assert command[:3] == [sys.executable, "-m", "tasks.xhs_business_seed.worker"]
+    assert _command_value(command, "--save-option") == "supabase"
+    assert _command_value(command, "--profile-mode") == "clone"

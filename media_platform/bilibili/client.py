@@ -24,6 +24,7 @@
 import asyncio
 import json
 import random
+import time
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 from urllib.parse import urlencode
 
@@ -61,6 +62,8 @@ class BilibiliClient(AbstractApiClient, ProxyRefreshMixin):
         self._host = "https://api.bilibili.com"
         self.playwright_page = playwright_page
         self.cookie_dict = cookie_dict
+        self._wbi_key_cache: Optional[Tuple[str, str]] = None
+        self._wbi_key_cache_at: float = 0.0
         # Initialize proxy pool (from ProxyRefreshMixin)
         self.init_proxy_pool(proxy_ip_pool)
 
@@ -98,21 +101,50 @@ class BilibiliClient(AbstractApiClient, ProxyRefreshMixin):
         Get the latest img_key and sub_key
         :return:
         """
-        local_storage = await self.playwright_page.evaluate("() => window.localStorage")
-        wbi_img_urls = local_storage.get("wbi_img_urls", "")
-        if not wbi_img_urls:
-            img_url_from_storage = local_storage.get("wbi_img_url")
-            sub_url_from_storage = local_storage.get("wbi_sub_url")
-            if img_url_from_storage and sub_url_from_storage:
-                wbi_img_urls = f"{img_url_from_storage}-{sub_url_from_storage}"
-        if wbi_img_urls and "-" in wbi_img_urls:
-            img_url, sub_url = wbi_img_urls.split("-")
-        else:
-            resp = await self.request(method="GET", url=self._host + "/x/web-interface/nav")
-            img_url: str = resp['wbi_img']['img_url']
-            sub_url: str = resp['wbi_img']['sub_url']
-        img_key = img_url.rsplit('/', 1)[1].split('.')[0]
-        sub_key = sub_url.rsplit('/', 1)[1].split('.')[0]
+        # Reuse a short-lived cache to avoid repeatedly touching a possibly transient page.
+        if self._wbi_key_cache and (time.time() - self._wbi_key_cache_at) < 300:
+            return self._wbi_key_cache
+
+        img_url = ""
+        sub_url = ""
+        try:
+            if self.playwright_page and not self.playwright_page.is_closed():
+                local_storage = await self.playwright_page.evaluate("() => window.localStorage")
+                wbi_img_urls = local_storage.get("wbi_img_urls", "")
+                if not wbi_img_urls:
+                    img_url_from_storage = local_storage.get("wbi_img_url")
+                    sub_url_from_storage = local_storage.get("wbi_sub_url")
+                    if img_url_from_storage and sub_url_from_storage:
+                        wbi_img_urls = f"{img_url_from_storage}-{sub_url_from_storage}"
+                if wbi_img_urls and "-" in wbi_img_urls:
+                    img_url, sub_url = wbi_img_urls.split("-", 1)
+        except Exception as ex:
+            # The crawler page might be closed mid-run; this path is non-fatal.
+            utils.logger.warning(
+                f"[BilibiliClient.get_wbi_keys] Read localStorage failed, fallback to nav API: {ex}"
+            )
+
+        if not img_url or not sub_url:
+            resp = await self.request(
+                method="GET",
+                url=self._host + "/x/web-interface/nav",
+                headers=self.headers,
+            )
+            wbi_img = resp.get("wbi_img", {}) if isinstance(resp, dict) else {}
+            img_url = str(wbi_img.get("img_url", ""))
+            sub_url = str(wbi_img.get("sub_url", ""))
+            if not img_url or not sub_url:
+                if self._wbi_key_cache:
+                    utils.logger.warning(
+                        "[BilibiliClient.get_wbi_keys] Nav API returned empty keys, use cached key pair."
+                    )
+                    return self._wbi_key_cache
+                raise DataFetchError("Failed to fetch wbi keys from nav API")
+
+        img_key = img_url.rsplit("/", 1)[1].split(".")[0]
+        sub_key = sub_url.rsplit("/", 1)[1].split(".")[0]
+        self._wbi_key_cache = (img_key, sub_key)
+        self._wbi_key_cache_at = time.time()
         return img_key, sub_key
 
     async def get(self, uri: str, params=None, enable_params_sign: bool = True) -> Dict:

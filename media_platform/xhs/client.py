@@ -278,6 +278,19 @@ class XiaoHongShuClient(AbstractApiClient, ProxyRefreshMixin):
             return await self.page_factory()
         return await self.playwright_page.context.new_page()
 
+    @staticmethod
+    def _detect_challenge_marker(html: str) -> str:
+        lowered = str(html or "").lower()
+        markers = {
+            "captcha": ("captcha", "verify", "verifyuuid"),
+            "risk": ("风控", "验证", "security", "risk"),
+            "login": ("登录", "扫码", "login"),
+        }
+        for label, keywords in markers.items():
+            if any(keyword in lowered for keyword in keywords):
+                return label
+        return ""
+
     async def get_note_by_keyword(
         self,
         keyword: str,
@@ -375,7 +388,23 @@ class XiaoHongShuClient(AbstractApiClient, ProxyRefreshMixin):
                 await page.wait_for_timeout(1_500)
 
             html = await page.content()
-            return self._extractor.extract_note_detail_from_html(note_id, html)
+            note_detail = self._extractor.extract_note_detail_from_html(note_id, html)
+            if note_detail:
+                return note_detail
+
+            challenge_marker = self._detect_challenge_marker(html)
+            if challenge_marker:
+                utils.logger.warning(
+                    f"[XiaoHongShuClient.get_note_by_id_from_browser] Browser page challenge detected "
+                    f"for note_id={note_id}, marker={challenge_marker}"
+                )
+            else:
+                title = await page.title()
+                utils.logger.warning(
+                    "[XiaoHongShuClient.get_note_by_id_from_browser] Browser page loaded but extractor returned "
+                    f"empty result for note_id={note_id}, title={title!r}, html_len={len(html)}"
+                )
+            return None
         finally:
             if page:
                 try:
@@ -732,5 +761,19 @@ class XiaoHongShuClient(AbstractApiClient, ProxyRefreshMixin):
         html = await self.request(
             method="GET", url=url, return_response=True, headers=copy_headers
         )
+        note_detail = self._extractor.extract_note_detail_from_html(note_id, html)
+        if note_detail:
+            return note_detail
 
-        return self._extractor.extract_note_detail_from_html(note_id, html)
+        challenge_marker = self._detect_challenge_marker(html)
+        if challenge_marker:
+            utils.logger.warning(
+                f"[XiaoHongShuClient.get_note_by_id_from_html] Raw HTML challenge detected for "
+                f"note_id={note_id}, marker={challenge_marker}, enable_cookie={enable_cookie}"
+            )
+        else:
+            utils.logger.warning(
+                "[XiaoHongShuClient.get_note_by_id_from_html] Raw HTML extractor returned empty "
+                f"for note_id={note_id}, html_len={len(html)}, enable_cookie={enable_cookie}"
+            )
+        return None
